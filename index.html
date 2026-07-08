@@ -313,6 +313,9 @@
       <label class="field">Cargo / Área (opcional)
         <input type="text" id="empCargo" placeholder="Ej: Analista de RRHH">
       </label>
+      <label class="field">RUT (opcional)
+        <input type="text" id="empRut" placeholder="Ej: 12.345.678-9">
+      </label>
       <label class="field">Fecha de ingreso
         <input type="date" id="empFechaIngreso">
       </label>
@@ -326,6 +329,23 @@
     <div class="actions">
       <button class="ghost" id="empCancel">Cancelar</button>
       <button class="primary" id="empSave">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: mover colaborador de centro (admin) -->
+<div class="overlay" id="moveOverlay" hidden>
+  <div class="modal">
+    <h2>Mover colaborador de centro</h2>
+    <p class="note" style="margin:0 0 14px;">El colaborador <strong id="moveEmpNombre"></strong> se moverá al centro seleccionado, conservando su
+      fecha de ingreso, RUT y todo su historial de vacaciones tomadas. Dejará de aparecer en <strong id="moveEmpOrigen"></strong>.</p>
+    <label class="field">Centro de destino
+      <select id="moveTargetCentro"></select>
+    </label>
+    <div class="auth-error" id="moveError" hidden></div>
+    <div class="actions">
+      <button class="ghost" id="moveCancel">Cancelar</button>
+      <button class="primary" id="moveConfirm">Mover</button>
     </div>
   </div>
 </div>
@@ -933,7 +953,7 @@
         ? '<span class="badge progressive" title="Feriado progresivo activo">+'+s.acc.extraActive+' progresivo</span>' : "";
       var row =
         '<tr class="emp-row'+(selected?' selected':'')+'" data-id="'+emp.id+'">'+
-          '<td><strong>'+escapeHtml(emp.nombre)+'</strong>'+(emp.cargo?'<div class="note" style="margin:2px 0 0;">'+escapeHtml(emp.cargo)+'</div>':'')+'</td>'+
+          '<td><strong>'+escapeHtml(emp.nombre)+'</strong>'+(emp.rut?'<div class="note" style="margin:2px 0 0;">'+escapeHtml(emp.rut)+'</div>':'')+(emp.cargo?'<div class="note" style="margin:2px 0 0;">'+escapeHtml(emp.cargo)+'</div>':'')+'</td>'+
           '<td>'+emp.fechaIngreso+'</td>'+
           '<td>'+years+'a '+months+'m</td>'+
           '<td class="num">'+s.acc.currentYearEntitlement+' '+progBadge+'</td>'+
@@ -947,6 +967,7 @@
           '</td>'+
           '<td>'+
             '<button class="small ghost" data-action="edit" data-id="'+emp.id+'">Editar</button> '+
+            (currentUser && currentUser.role === "admin" ? '<button class="small ghost" data-action="move" data-id="'+emp.id+'">Mover de centro</button> ' : '')+
             '<button class="small danger ghost" data-action="delete" data-id="'+emp.id+'">Eliminar</button>'+
           '</td>'+
         '</tr>';
@@ -1028,6 +1049,10 @@
         }
         return;
       }
+      if (action === "move"){
+        openMoveModal(actionBtn.getAttribute("data-id"));
+        return;
+      }
       if (action === "add-periodo"){
         var empId = actionBtn.getAttribute("data-emp");
         var inicio = document.getElementById("periodoInicio_"+empId).value;
@@ -1064,6 +1089,7 @@
     document.getElementById("empModalTitle").textContent = emp ? "Editar colaborador" : "Nuevo colaborador";
     document.getElementById("empNombre").value = emp ? emp.nombre : "";
     document.getElementById("empCargo").value = emp ? (emp.cargo||"") : "";
+    document.getElementById("empRut").value = emp ? (emp.rut||"") : "";
     document.getElementById("empFechaIngreso").value = emp ? emp.fechaIngreso : "";
     document.getElementById("empAniosAnteriores").value = emp ? (emp.aniosServiciosAnteriores || 0) : 0;
     document.getElementById("empOverlay").hidden = false;
@@ -1073,17 +1099,56 @@
   document.getElementById("empSave").addEventListener("click", function(){
     var nombre = document.getElementById("empNombre").value.trim();
     var cargo = document.getElementById("empCargo").value.trim();
+    var rut = document.getElementById("empRut").value.trim();
     var fecha = document.getElementById("empFechaIngreso").value;
     var aniosAnteriores = Math.min(Math.max(0, Math.round(Number(document.getElementById("empAniosAnteriores").value) || 0)), 10);
     if (!nombre || !fecha){ alert("Ingresa al menos el nombre y la fecha de ingreso."); return; }
     var employees = activeCenterEmployees();
     if (uiEditingEmployeeId){
       var emp = employees.filter(function(x){ return x.id === uiEditingEmployeeId; })[0];
-      emp.nombre = nombre; emp.cargo = cargo; emp.fechaIngreso = fecha; emp.aniosServiciosAnteriores = aniosAnteriores;
+      emp.nombre = nombre; emp.cargo = cargo; emp.rut = rut; emp.fechaIngreso = fecha; emp.aniosServiciosAnteriores = aniosAnteriores;
     } else {
-      employees.push({ id: uid(), nombre: nombre, cargo: cargo, fechaIngreso: fecha, aniosServiciosAnteriores: aniosAnteriores, periodos: [] });
+      employees.push({ id: uid(), nombre: nombre, cargo: cargo, rut: rut, fechaIngreso: fecha, aniosServiciosAnteriores: aniosAnteriores, periodos: [] });
     }
     document.getElementById("empOverlay").hidden = true;
+    onDataChanged();
+  });
+
+  // ---------- Mover colaborador de centro (admin) ----------
+  var moveEmployeeId = null;
+  function openMoveModal(id){
+    if (!currentUser || currentUser.role !== "admin") return;
+    var origen = activeCenterKey();
+    var emp = activeCenterEmployees().filter(function(x){ return x.id === id; })[0];
+    if (!emp) return;
+    moveEmployeeId = id;
+    document.getElementById("moveEmpNombre").textContent = emp.nombre;
+    document.getElementById("moveEmpOrigen").textContent = centerLabel(origen);
+    var sel = document.getElementById("moveTargetCentro");
+    sel.innerHTML = CENTERS.filter(function(c){ return c.key !== origen; }).map(function(c){
+      return '<option value="'+c.key+'">'+escapeHtml(c.nombre)+'</option>';
+    }).join("");
+    document.getElementById("moveError").hidden = true;
+    document.getElementById("moveOverlay").hidden = false;
+  }
+  document.getElementById("moveCancel").addEventListener("click", function(){
+    moveEmployeeId = null;
+    document.getElementById("moveOverlay").hidden = true;
+  });
+  document.getElementById("moveConfirm").addEventListener("click", function(){
+    var errEl = document.getElementById("moveError");
+    if (!currentUser || currentUser.role !== "admin" || !moveEmployeeId){ document.getElementById("moveOverlay").hidden = true; return; }
+    var origen = activeCenterKey();
+    var target = document.getElementById("moveTargetCentro").value;
+    if (!target || target === origen){ errEl.textContent = "Selecciona un centro de destino distinto al actual."; errEl.hidden = false; return; }
+    var origenEmployees = state.centers[origen].employees;
+    var emp = origenEmployees.filter(function(x){ return x.id === moveEmployeeId; })[0];
+    if (!emp){ errEl.textContent = "No se encontró al colaborador (puede que ya se haya movido)."; errEl.hidden = false; return; }
+    state.centers[origen].employees = origenEmployees.filter(function(x){ return x.id !== moveEmployeeId; });
+    state.centers[target].employees.push(emp);
+    if (uiSelectedEmployee === moveEmployeeId) uiSelectedEmployee = null;
+    moveEmployeeId = null;
+    document.getElementById("moveOverlay").hidden = true;
     onDataChanged();
   });
 
