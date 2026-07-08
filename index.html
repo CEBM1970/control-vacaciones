@@ -1005,13 +1005,36 @@
       '</tr></thead><tbody>'+rows+'</tbody></table>';
   }
 
+  function yearWindow(ingresoISO, n){
+    var ingreso = parseISO(ingresoISO);
+    var start = new Date(Date.UTC(ingreso.getUTCFullYear() + (n-1), ingreso.getUTCMonth(), ingreso.getUTCDate()));
+    var end = addDays(new Date(Date.UTC(ingreso.getUTCFullYear() + n, ingreso.getUTCMonth(), ingreso.getUTCDate())), -1);
+    return { inicio: toISO(start), fin: toISO(end) };
+  }
+  function diasTomadosEnVentana(emp, ventana){
+    return emp.periodos.reduce(function(sum, p){
+      if (p.inicio >= ventana.inicio && p.inicio <= ventana.fin) return sum + countBusinessDays(p.inicio, p.fin);
+      return sum;
+    }, 0);
+  }
   function renderDetail(emp, s){
     var yearsRows = "";
     for (var y = 1; y <= Math.max(s.acc.yearsCompleted, 1); y++){
       var ent = entitlementForYear(y, s.acc.threshold);
-      yearsRows += '<tr><td>Año '+y+'</td><td class="num">'+ent+(ent>15?' <span class="note" style="display:inline;">(progresivo)</span>':'')+'</td></tr>';
+      var ventana = yearWindow(emp.fechaIngreso, y);
+      var tomadosVentana = diasTomadosEnVentana(emp, ventana);
+      var pendienteVentana = ent - tomadosVentana;
+      var pendClass = pendienteVentana <= 0 ? "good" : (pendienteVentana < ent ? "warning" : "critical");
+      yearsRows += '<tr><td>Año '+y+'<div class="note" style="margin:2px 0 0;">'+ventana.inicio+' → '+ventana.fin+'</div></td>'+
+        '<td class="num">'+ent+(ent>15?' <span class="note" style="display:inline;">(progresivo)</span>':'')+'</td>'+
+        '<td class="num">'+fmt1(tomadosVentana)+'</td>'+
+        '<td class="num"><span class="badge '+pendClass+'">'+fmt1(pendienteVentana)+'</span></td>'+
+      '</tr>';
       if (y > s.acc.yearsCompleted) break;
     }
+    var ventanaActual = yearWindow(emp.fechaIngreso, s.acc.yearsCompleted+1);
+    var tomadosActual = diasTomadosEnVentana(emp, ventanaActual);
+    var devengadoActual = s.acc.monthsIntoCurrentYear*(s.acc.currentYearEntitlement/12);
     var priorNote = s.acc.priorYears > 0
       ? '<p class="note">Años reconocidos de empleadores anteriores: <strong>'+s.acc.priorYears+'</strong> (tope legal 10).'+
         (s.acc.threshold > 0
@@ -1032,10 +1055,10 @@
         '<div class="detail-grid">'+
           '<div>'+
             '<h3>Devengo por año de antigüedad</h3>'+
-            '<table class="mini-table"><thead><tr><th>Periodo</th><th class="num">Días</th></tr></thead>'+
+            '<table class="mini-table"><thead><tr><th>Periodo</th><th class="num">Días/año</th><th class="num">Tomados</th><th class="num">Pendientes</th></tr></thead>'+
             '<tbody>'+yearsRows+'</tbody></table>'+
-            '<p class="note">Año en curso ('+ (s.acc.yearsCompleted+1) +'): '+s.acc.currentYearEntitlement+' días/año, '+
-              s.acc.monthsIntoCurrentYear+' de 12 meses transcurridos → '+fmt1(s.acc.monthsIntoCurrentYear*(s.acc.currentYearEntitlement/12))+' días devengados este periodo.</p>'+
+            '<p class="note">Año en curso ('+ (s.acc.yearsCompleted+1) +', '+ventanaActual.inicio+' → '+ventanaActual.fin+'): '+s.acc.currentYearEntitlement+' días/año, '+
+              s.acc.monthsIntoCurrentYear+' de 12 meses transcurridos → '+fmt1(devengadoActual)+' días devengados hasta ahora; '+fmt1(tomadosActual)+' tomados en este periodo.</p>'+
             priorNote+
           '</div>'+
           '<div>'+
