@@ -15,8 +15,9 @@
     --gridline:       #e1e0d9;
     --baseline:       #c3c2b7;
     --border:         rgba(11,11,11,0.10);
-    --series-blue:    #2a78d6;
-    --series-blue-soft: #cde2fb;
+    --brand-primary:  #3f4a2b;
+    --brand-soft:     #e3edd1;
+    --brand-accent:   #8dc63f;
     --good:           #0ca30c;
     --warning:        #b9790a;
     --critical:       #d03b3b;
@@ -36,8 +37,9 @@
       --gridline:       #2c2c2a;
       --baseline:       #383835;
       --border:         rgba(255,255,255,0.10);
-      --series-blue:    #3987e5;
-      --series-blue-soft: #184f95;
+      --brand-primary:  #9bb56e;
+      --brand-soft:     #2e3a1c;
+      --brand-accent:   #8dc63f;
       --good:           #0ca30c;
       --warning:        #d99a1f;
       --critical:       #e66767;
@@ -59,14 +61,16 @@
   header.app { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; justify-content:space-between; margin-bottom: 14px; }
   header.app h1 { font-size: 22px; margin: 0 0 4px; }
   header.app p { margin: 0; color: var(--text-secondary); font-size: 13.5px; max-width: 560px; }
+  .brand-title { display:flex; align-items:center; gap:14px; }
+  .brand-logo { height: 44px; width: auto; flex: none; }
   .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom: 16px; }
   button, .btn {
     font: inherit; font-size: 13.5px; cursor:pointer; border-radius: 8px;
     border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary);
     padding: 8px 13px; display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
   }
-  button:hover { border-color: var(--series-blue); }
-  button.primary { background: var(--series-blue); color:#fff; border-color: var(--series-blue); }
+  button:hover { border-color: var(--brand-primary); }
+  button.primary { background: var(--brand-primary); color:#fff; border-color: var(--brand-primary); }
   button.primary:hover { filter: brightness(1.06); }
   button.ghost { background: transparent; }
   button.small { padding: 5px 9px; font-size: 12.5px; }
@@ -91,24 +95,24 @@
   table { width:100%; border-collapse: collapse; font-size: 13.5px; }
   th, td { text-align:left; padding: 10px 14px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
   th { font-size: 11.5px; text-transform:uppercase; letter-spacing:.03em; color: var(--text-muted); font-weight:600; }
-  tbody tr:hover { background: rgba(42,120,214,0.05); }
+  tbody tr:hover { background: rgba(63,74,43,0.06); }
   td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; }
   tr.emp-row { cursor:pointer; }
-  tr.emp-row.selected { background: rgba(42,120,214,0.08); }
+  tr.emp-row.selected { background: rgba(63,74,43,0.10); }
 
   .badge { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; padding:3px 8px; border-radius:999px; }
   .badge.good { background: var(--good-bg); color: var(--good); }
   .badge.warning { background: var(--warning-bg); color: var(--warning); }
   .badge.critical { background: var(--critical-bg); color: var(--critical); }
-  .badge.progressive { background: var(--series-blue-soft); color: var(--series-blue); }
+  .badge.progressive { background: var(--brand-soft); color: var(--brand-primary); }
 
   .bar { position:relative; width: 90px; height:8px; border-radius:4px; background: var(--gridline); overflow:hidden; }
-  .bar > span { position:absolute; left:0; top:0; bottom:0; background: var(--series-blue); border-radius:4px; }
+  .bar > span { position:absolute; left:0; top:0; bottom:0; background: var(--brand-primary); border-radius:4px; }
   .bar.over > span { background: var(--critical); }
 
   .empty-state { padding: 34px 16px; text-align:center; color: var(--text-secondary); font-size:13.5px; }
 
-  .detail-drawer { padding: 14px 16px 18px; border-top: 1px dashed var(--gridline); background: rgba(42,120,214,0.03); }
+  .detail-drawer { padding: 14px 16px 18px; border-top: 1px dashed var(--gridline); background: rgba(63,74,43,0.04); }
   .detail-grid { display:grid; grid-template-columns: 1.1fr 1fr; gap: 18px; }
   @media (max-width: 800px) { .detail-grid { grid-template-columns: 1fr; } }
   .detail-grid h3 { font-size: 13px; margin: 0 0 8px; color: var(--text-secondary); text-transform:uppercase; letter-spacing:.03em; }
@@ -130,7 +134,7 @@
   .tag-disabled { text-decoration: line-through; color: var(--text-muted); }
 
   .footer-note { margin-top: 26px; font-size: 12px; color: var(--text-muted); line-height:1.6; }
-  .link-btn { background:none;border:none;color:var(--series-blue);cursor:pointer;padding:0;font:inherit;text-decoration:underline; }
+  .link-btn { background:none;border:none;color:var(--brand-primary);cursor:pointer;padding:0;font:inherit;text-decoration:underline; }
 
   .sync-bar { width:100%; display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12.5px; color:var(--text-secondary); background:var(--surface-1); border:1px solid var(--border); border-radius:8px; padding:7px 12px; margin-bottom:14px; }
   .sync-dot { width:8px; height:8px; border-radius:50%; flex:none; }
@@ -150,12 +154,12 @@
   .topbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:14px; padding:10px 14px; background: var(--surface-1); border:1px solid var(--border); border-radius: var(--radius); }
   .topbar .who { font-size:13px; color: var(--text-secondary); }
   .topbar .who strong { color: var(--text-primary); }
-  .role-pill { display:inline-flex; padding:2px 8px; border-radius:999px; background: var(--series-blue-soft); color: var(--series-blue); font-size:11px; font-weight:600; margin-left:6px; }
+  .role-pill { display:inline-flex; padding:2px 8px; border-radius:999px; background: var(--brand-soft); color: var(--brand-primary); font-size:11px; font-weight:600; margin-left:6px; }
   .topbar-actions { display:flex; gap:8px; flex-wrap:wrap; }
 
   .center-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
   .center-tab { padding:7px 14px; border-radius:999px; border:1px solid var(--border); background: var(--surface-2); cursor:pointer; font-size:12.5px; }
-  .center-tab.active { background: var(--series-blue); color:#fff; border-color: var(--series-blue); }
+  .center-tab.active { background: var(--brand-primary); color:#fff; border-color: var(--brand-primary); }
 
   .operators-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:12px; }
   .operator-card { border:1px solid var(--border); border-radius: var(--radius); padding:14px; background: var(--surface-1); }
@@ -232,9 +236,12 @@
   <div id="appContent" hidden>
 
     <header class="app">
-      <div>
-        <h1>Control de Vacaciones del Personal</h1>
-        <p>Feriado legal de 15 días hábiles anuales por aniversario de ingreso, con feriado progresivo (+1 día por cada 3 años tras cumplir 10 años de antigüedad).</p>
+      <div class="brand-title">
+        <img src="logo.png" alt="Preserva" class="brand-logo" onerror="this.style.display='none'">
+        <div>
+          <h1>Control de Vacaciones del Personal</h1>
+          <p>Feriado legal de 15 días hábiles anuales por aniversario de ingreso, con feriado progresivo (+1 día por cada 3 años tras cumplir 10 años de antigüedad).</p>
+        </div>
       </div>
     </header>
 
