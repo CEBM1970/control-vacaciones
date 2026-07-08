@@ -166,6 +166,10 @@
   .operator-card h4 { margin:0 0 8px; font-size:13.5px; }
   .operator-card .op-user { font-size:12.5px; color: var(--text-secondary); margin-bottom:10px; min-height:16px; }
   .operator-card .op-actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .operator-card .op-list { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+  .operator-row { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; border:1px solid var(--border); border-radius:8px; padding:6px 8px; background: var(--surface-2, var(--surface-1)); }
+  .operator-row .op-row-user { font-weight:600; overflow-wrap:anywhere; }
+  .operator-row .op-row-actions { display:flex; gap:4px; flex-wrap:nowrap; flex:none; }
 </style>
 </head>
 <body>
@@ -534,13 +538,16 @@
       return Array.prototype.map.call(new Uint8Array(buf), function(b){ return b.toString(16).padStart(2,"0"); }).join("");
     });
   }
-  function usernameTaken(username, excludeCentro){
+  function usernameTaken(username, excludeId){
     var u = username.trim().toLowerCase();
     if (state.admin && state.admin.username.toLowerCase() === u) return true;
-    return state.operators.some(function(o){ return o.centro !== excludeCentro && o.username.toLowerCase() === u; });
+    return state.operators.some(function(o){ return o.id !== excludeId && o.username.toLowerCase() === u; });
   }
-  function getOperatorForCenter(key){
-    return state.operators.filter(function(o){ return o.centro === key; })[0] || null;
+  function getOperatorsForCenter(key){
+    return state.operators.filter(function(o){ return o.centro === key; });
+  }
+  function getOperatorById(id){
+    return state.operators.filter(function(o){ return o.id === id; })[0] || null;
   }
 
   // ---------- Persistencia local (IndexedDB) + sincronización en carpeta compartida ----------
@@ -1269,7 +1276,7 @@
       }
       var op = state.operators.filter(function(o){ return o.username.toLowerCase() === user.toLowerCase(); })[0];
       if (op && op.pinHash === hash){
-        currentUser = { role: "operator", username: op.username, centro: op.centro };
+        currentUser = { role: "operator", id: op.id, username: op.username, centro: op.centro };
         document.getElementById("loginUser").value = ""; document.getElementById("loginPin").value = "";
         renderApp();
         return;
@@ -1302,7 +1309,7 @@
       if (currentUser.role === "admin"){
         state.admin.pinHash = hash;
       } else {
-        var op = state.operators.filter(function(o){ return o.centro === currentUser.centro; })[0];
+        var op = getOperatorById(currentUser.id);
         if (op) op.pinHash = hash;
       }
       document.getElementById("pinOverlay").hidden = true;
@@ -1323,13 +1330,21 @@
   function renderOperatorsGrid(){
     var host = document.getElementById("operatorsGrid");
     host.innerHTML = CENTERS.map(function(c){
-      var op = getOperatorForCenter(c.key);
+      var ops = getOperatorsForCenter(c.key);
+      var rows = ops.length ? ops.map(function(op){
+        return '<div class="operator-row">'+
+          '<span class="op-row-user">'+escapeHtml(op.username)+'</span>'+
+          '<span class="op-row-actions">'+
+            '<button class="small ghost" data-op-action="edit" data-op-id="'+op.id+'">Editar</button>'+
+            '<button class="small ghost danger" data-op-action="remove" data-op-id="'+op.id+'">Quitar</button>'+
+          '</span>'+
+        '</div>';
+      }).join("") : '<div class="op-user">Sin operadores asignados</div>';
       return '<div class="operator-card">'+
         '<h4>'+escapeHtml(c.nombre)+'</h4>'+
-        '<div class="op-user">'+(op ? ("Usuario: <strong>"+escapeHtml(op.username)+"</strong>") : "Sin operador asignado")+'</div>'+
+        '<div class="op-list">'+rows+'</div>'+
         '<div class="op-actions">'+
-          '<button class="small ghost" data-op-action="edit" data-centro="'+c.key+'">'+(op?'Editar / Restablecer PIN':'Crear operador')+'</button>'+
-          (op ? '<button class="small ghost danger" data-op-action="remove" data-centro="'+c.key+'">Quitar acceso</button>' : '')+
+          '<button class="small ghost" data-op-action="add" data-centro="'+c.key+'">+ Agregar operador</button>'+
         '</div>'+
       '</div>';
     }).join("");
@@ -1337,21 +1352,28 @@
   document.getElementById("operatorsGrid").addEventListener("click", function(e){
     var btn = e.target.closest("[data-op-action]");
     if (!btn) return;
-    var centro = btn.getAttribute("data-centro");
     var action = btn.getAttribute("data-op-action");
-    if (action === "edit") openOperatorForm(centro);
-    else if (action === "remove"){
-      if (confirm("¿Quitar el acceso del operador de " + centerLabel(centro) + "?")){
-        state.operators = state.operators.filter(function(o){ return o.centro !== centro; });
+    if (action === "add"){
+      openOperatorForm(btn.getAttribute("data-centro"), null);
+    } else if (action === "edit"){
+      var opEdit = getOperatorById(btn.getAttribute("data-op-id"));
+      if (opEdit) openOperatorForm(opEdit.centro, opEdit.id);
+    } else if (action === "remove"){
+      var opId = btn.getAttribute("data-op-id");
+      var opRemove = getOperatorById(opId);
+      if (opRemove && confirm("¿Quitar el acceso del operador \""+opRemove.username+"\" de " + centerLabel(opRemove.centro) + "?")){
+        state.operators = state.operators.filter(function(o){ return o.id !== opId; });
         persistState();
         renderOperatorsGrid();
       }
     }
   });
   var operatorFormCentro = null;
-  function openOperatorForm(centro){
+  var operatorFormEditingId = null;
+  function openOperatorForm(centro, opId){
     operatorFormCentro = centro;
-    var op = getOperatorForCenter(centro);
+    operatorFormEditingId = opId || null;
+    var op = opId ? getOperatorById(opId) : null;
     document.getElementById("operatorFormTitle").textContent = (op ? "Editar operador — " : "Nuevo operador — ") + centerLabel(centro);
     document.getElementById("operatorCentroLabel").value = centerLabel(centro);
     document.getElementById("operatorUser").value = op ? op.username : "";
@@ -1366,9 +1388,9 @@
     var pin = document.getElementById("operatorPin").value;
     var pin2 = document.getElementById("operatorPin2").value;
     var errEl = document.getElementById("operatorFormError");
-    var existing = getOperatorForCenter(operatorFormCentro);
+    var existing = operatorFormEditingId ? getOperatorById(operatorFormEditingId) : null;
     if (!user){ errEl.textContent = "Ingresa un usuario."; errEl.hidden = false; return; }
-    if (usernameTaken(user, operatorFormCentro)){ errEl.textContent = "Ese usuario ya está en uso por otra cuenta."; errEl.hidden = false; return; }
+    if (usernameTaken(user, operatorFormEditingId)){ errEl.textContent = "Ese usuario ya está en uso por otra cuenta."; errEl.hidden = false; return; }
     if (!existing && pin.length < 4){ errEl.textContent = "Ingresa un PIN de al menos 4 caracteres para el nuevo operador."; errEl.hidden = false; return; }
     if (pin && pin.length < 4){ errEl.textContent = "El PIN debe tener al menos 4 caracteres."; errEl.hidden = false; return; }
     if (pin !== pin2){ errEl.textContent = "Los PIN no coinciden."; errEl.hidden = false; return; }
