@@ -374,11 +374,15 @@
   </div>
 </div>
 
-<!-- Modal: gestión de operadores (admin) -->
+<!-- Modal: gestión de usuarios (admin) -->
 <div class="overlay" id="operatorsOverlay" hidden>
   <div class="modal" style="max-width:640px;">
-    <h2>Operadores autorizados por centro</h2>
-    <p class="note" style="margin:0 0 14px;">Cada centro de negocio solo puede ser accedido por su operador autorizado. Crea, edita o quita el acceso.</p>
+    <h2>Gestión de usuarios</h2>
+    <div id="adminsSection">
+      <p class="note" style="margin:0 0 10px;">Administradores: acceden y editan los 4 centros. Solo un super administrador puede crear, editar o quitar otros administradores.</p>
+      <div class="operators-grid" id="adminsGrid" style="margin-bottom:18px;"></div>
+    </div>
+    <p class="note" style="margin:0 0 14px;">Operadores por centro: cada centro de negocio solo puede ser accedido por sus operadores autorizados. Crea, edita o quita el acceso.</p>
     <div class="operators-grid" id="operatorsGrid"></div>
     <div class="actions" style="margin-top:16px;">
       <button class="ghost" id="operatorsClose">Cerrar</button>
@@ -386,12 +390,12 @@
   </div>
 </div>
 
-<!-- Modal: crear/editar operador -->
+<!-- Modal: crear/editar operador o administrador -->
 <div class="overlay" id="operatorFormOverlay" hidden>
   <div class="modal">
     <h2 id="operatorFormTitle">Operador</h2>
     <div class="form-col">
-      <label class="field">Centro
+      <label class="field" id="operatorCentroField">Centro
         <input type="text" id="operatorCentroLabel" disabled>
       </label>
       <label class="field">Usuario
@@ -402,6 +406,10 @@
       </label>
       <label class="field">Confirmar PIN
         <input type="password" id="operatorPin2" placeholder="Repite el PIN">
+      </label>
+      <label class="field" id="operatorSuperField" hidden style="flex-direction:row;align-items:center;gap:8px;">
+        <input type="checkbox" id="operatorSuperadmin" style="width:auto;">
+        <span>Super administrador (puede gestionar otros administradores)</span>
       </label>
     </div>
     <div class="auth-error" id="operatorFormError" hidden></div>
@@ -509,7 +517,7 @@
     CENTERS.forEach(function(c){ centers[c.key] = { nombre: c.nombre, employees: [] }; });
     return {
       updatedAt: null,
-      admin: null,
+      admins: [],
       operators: [],
       centers: centers,
       customHolidays: [],
@@ -524,9 +532,20 @@
       var existing = raw.centers && raw.centers[c.key];
       centers[c.key] = { nombre: c.nombre, employees: (existing && Array.isArray(existing.employees)) ? existing.employees : [] };
     });
+    var admins;
+    if (Array.isArray(raw.admins)){
+      admins = raw.admins.filter(function(a){ return a && a.username; }).map(function(a){
+        return { id: a.id || uid(), username: a.username, pinHash: a.pinHash, superadmin: !!a.superadmin };
+      });
+    } else if (raw.admin && raw.admin.username){
+      // Formato antiguo (un solo administrador): se migra como super administrador único.
+      admins = [{ id: uid(), username: raw.admin.username, pinHash: raw.admin.pinHash, superadmin: true }];
+    } else {
+      admins = [];
+    }
     return {
       updatedAt: raw.updatedAt || null,
-      admin: raw.admin && raw.admin.username ? { username: raw.admin.username, pinHash: raw.admin.pinHash } : null,
+      admins: admins,
       operators: Array.isArray(raw.operators) ? raw.operators.map(function(o){
         return { id: o.id || uid(), centro: o.centro, username: o.username, pinHash: o.pinHash };
       }) : [],
@@ -560,8 +579,11 @@
   }
   function usernameTaken(username, excludeId){
     var u = username.trim().toLowerCase();
-    if (state.admin && state.admin.username.toLowerCase() === u) return true;
+    if (state.admins.some(function(a){ return a.id !== excludeId && a.username.toLowerCase() === u; })) return true;
     return state.operators.some(function(o){ return o.id !== excludeId && o.username.toLowerCase() === u; });
+  }
+  function getAdminById(id){
+    return state.admins.filter(function(a){ return a.id === id; })[0] || null;
   }
   function getOperatorsForCenter(key){
     return state.operators.filter(function(o){ return o.centro === key; });
@@ -631,7 +653,7 @@
       mergedBase.centers[currentUser.centro] = state.centers[currentUser.centro];
     } else if (currentUser && currentUser.role === "admin"){
       mergedBase.centers[uiAdminActiveCenter] = state.centers[uiAdminActiveCenter];
-      mergedBase.admin = state.admin;
+      mergedBase.admins = state.admins;
       mergedBase.operators = state.operators;
       mergedBase.customHolidays = state.customHolidays;
       mergedBase.disabledHolidays = state.disabledHolidays;
@@ -1314,8 +1336,9 @@
     if (!user || pin.length < 4){ errEl.textContent = "Ingresa un usuario y un PIN de al menos 4 caracteres."; errEl.hidden = false; return; }
     if (pin !== pin2){ errEl.textContent = "El PIN y su confirmación no coinciden."; errEl.hidden = false; return; }
     hashPin(pin).then(function(hash){
-      state.admin = { username: user, pinHash: hash };
-      currentUser = { role: "admin", username: user };
+      var adm = { id: uid(), username: user, pinHash: hash, superadmin: true };
+      state.admins = [adm];
+      currentUser = { role: "admin", id: adm.id, username: user, superadmin: true };
       persistState();
       renderApp();
     });
@@ -1332,8 +1355,9 @@
     errEl.hidden = true;
     if (!user || !pin){ errEl.textContent = "Ingresa usuario y PIN."; errEl.hidden = false; return; }
     hashPin(pin).then(function(hash){
-      if (state.admin && state.admin.username.toLowerCase() === user.toLowerCase() && state.admin.pinHash === hash){
-        currentUser = { role: "admin", username: state.admin.username };
+      var adm = state.admins.filter(function(a){ return a.username.toLowerCase() === user.toLowerCase(); })[0];
+      if (adm && adm.pinHash === hash){
+        currentUser = { role: "admin", id: adm.id, username: adm.username, superadmin: !!adm.superadmin };
         uiAdminActiveCenter = CENTERS[0].key;
         document.getElementById("loginUser").value = ""; document.getElementById("loginPin").value = "";
         renderApp();
@@ -1372,7 +1396,8 @@
     if (p1 !== p2){ errEl.textContent = "Los PIN no coinciden."; errEl.hidden = false; return; }
     hashPin(p1).then(function(hash){
       if (currentUser.role === "admin"){
-        state.admin.pinHash = hash;
+        var adm = getAdminById(currentUser.id);
+        if (adm) adm.pinHash = hash;
       } else {
         var op = getOperatorById(currentUser.id);
         if (op) op.pinHash = hash;
@@ -1382,7 +1407,7 @@
     });
   });
 
-  // ---------- Gestión de operadores (admin) ----------
+  // ---------- Gestión de usuarios: administradores + operadores (admin) ----------
   document.getElementById("btnManageOperators").addEventListener("click", function(){
     if (!currentUser || currentUser.role !== "admin") return;
     document.getElementById("operatorsOverlay").hidden = false;
@@ -1392,7 +1417,27 @@
     document.getElementById("operatorsOverlay").hidden = true;
     renderApp();
   });
+  function renderAdminsGrid(){
+    var section = document.getElementById("adminsSection");
+    var isSuper = !!(currentUser && currentUser.superadmin);
+    section.hidden = !isSuper;
+    if (!isSuper) return;
+    var host = document.getElementById("adminsGrid");
+    var rows = state.admins.map(function(a){
+      return '<div class="operator-row">'+
+        '<span class="op-row-user">'+escapeHtml(a.username)+(a.superadmin?' <span class="badge good" style="margin-left:4px;">super admin</span>':'')+'</span>'+
+        '<span class="op-row-actions">'+
+          '<button class="small ghost" data-admin-action="edit" data-admin-id="'+a.id+'">Editar</button>'+
+          '<button class="small ghost danger" data-admin-action="remove" data-admin-id="'+a.id+'">Quitar</button>'+
+        '</span>'+
+      '</div>';
+    }).join("");
+    host.innerHTML = '<div class="operator-card"><h4>Administradores</h4><div class="op-list">'+
+      (rows || '<div class="op-user">Sin administradores</div>')+'</div>'+
+      '<div class="op-actions"><button class="small ghost" data-admin-action="add">+ Agregar administrador</button></div></div>';
+  }
   function renderOperatorsGrid(){
+    renderAdminsGrid();
     var host = document.getElementById("operatorsGrid");
     host.innerHTML = CENTERS.map(function(c){
       var ops = getOperatorsForCenter(c.key);
@@ -1414,15 +1459,44 @@
       '</div>';
     }).join("");
   }
+  document.getElementById("adminsGrid").addEventListener("click", function(e){
+    if (!currentUser || !currentUser.superadmin) return;
+    var btn = e.target.closest("[data-admin-action]");
+    if (!btn) return;
+    var action = btn.getAttribute("data-admin-action");
+    if (action === "add"){
+      openUserForm("admin", null, null);
+    } else if (action === "edit"){
+      var admEdit = getAdminById(btn.getAttribute("data-admin-id"));
+      if (admEdit) openUserForm("admin", null, admEdit.id);
+    } else if (action === "remove"){
+      var admId = btn.getAttribute("data-admin-id");
+      var admRemove = getAdminById(admId);
+      if (!admRemove) return;
+      if (admRemove.superadmin && state.admins.filter(function(a){ return a.superadmin; }).length <= 1){
+        alert("No puedes quitar al único super administrador. Asigna el rol a otro administrador primero.");
+        return;
+      }
+      if (currentUser.id === admId){
+        alert("No puedes quitar tu propia cuenta mientras estás conectado con ella.");
+        return;
+      }
+      if (confirm('¿Quitar el acceso del administrador "'+admRemove.username+'"?')){
+        state.admins = state.admins.filter(function(a){ return a.id !== admId; });
+        persistState();
+        renderOperatorsGrid();
+      }
+    }
+  });
   document.getElementById("operatorsGrid").addEventListener("click", function(e){
     var btn = e.target.closest("[data-op-action]");
     if (!btn) return;
     var action = btn.getAttribute("data-op-action");
     if (action === "add"){
-      openOperatorForm(btn.getAttribute("data-centro"), null);
+      openUserForm("operator", btn.getAttribute("data-centro"), null);
     } else if (action === "edit"){
       var opEdit = getOperatorById(btn.getAttribute("data-op-id"));
-      if (opEdit) openOperatorForm(opEdit.centro, opEdit.id);
+      if (opEdit) openUserForm("operator", opEdit.centro, opEdit.id);
     } else if (action === "remove"){
       var opId = btn.getAttribute("data-op-id");
       var opRemove = getOperatorById(opId);
@@ -1433,17 +1507,26 @@
       }
     }
   });
+  var userFormKind = "operator"; // "operator" | "admin"
   var operatorFormCentro = null;
   var operatorFormEditingId = null;
-  function openOperatorForm(centro, opId){
+  function openUserForm(kind, centro, id){
+    if (kind === "admin" && (!currentUser || !currentUser.superadmin)) return;
+    userFormKind = kind;
     operatorFormCentro = centro;
-    operatorFormEditingId = opId || null;
-    var op = opId ? getOperatorById(opId) : null;
-    document.getElementById("operatorFormTitle").textContent = (op ? "Editar operador — " : "Nuevo operador — ") + centerLabel(centro);
-    document.getElementById("operatorCentroLabel").value = centerLabel(centro);
-    document.getElementById("operatorUser").value = op ? op.username : "";
+    operatorFormEditingId = id || null;
+    var isAdmin = kind === "admin";
+    var existing = isAdmin ? (id ? getAdminById(id) : null) : (id ? getOperatorById(id) : null);
+    document.getElementById("operatorCentroField").hidden = isAdmin;
+    document.getElementById("operatorSuperField").hidden = !isAdmin;
+    document.getElementById("operatorFormTitle").textContent = isAdmin
+      ? (existing ? "Editar administrador" : "Nuevo administrador")
+      : (existing ? "Editar operador — " : "Nuevo operador — ") + centerLabel(centro);
+    if (!isAdmin) document.getElementById("operatorCentroLabel").value = centerLabel(centro);
+    document.getElementById("operatorUser").value = existing ? existing.username : "";
     document.getElementById("operatorPin").value = "";
     document.getElementById("operatorPin2").value = "";
+    document.getElementById("operatorSuperadmin").checked = isAdmin && existing ? !!existing.superadmin : false;
     document.getElementById("operatorFormError").hidden = true;
     document.getElementById("operatorFormOverlay").hidden = false;
   }
@@ -1453,18 +1536,36 @@
     var pin = document.getElementById("operatorPin").value;
     var pin2 = document.getElementById("operatorPin2").value;
     var errEl = document.getElementById("operatorFormError");
-    var existing = operatorFormEditingId ? getOperatorById(operatorFormEditingId) : null;
+    var isAdmin = userFormKind === "admin";
+    if (isAdmin && (!currentUser || !currentUser.superadmin)){ document.getElementById("operatorFormOverlay").hidden = true; return; }
+    var existing = isAdmin
+      ? (operatorFormEditingId ? getAdminById(operatorFormEditingId) : null)
+      : (operatorFormEditingId ? getOperatorById(operatorFormEditingId) : null);
     if (!user){ errEl.textContent = "Ingresa un usuario."; errEl.hidden = false; return; }
     if (usernameTaken(user, operatorFormEditingId)){ errEl.textContent = "Ese usuario ya está en uso por otra cuenta."; errEl.hidden = false; return; }
-    if (!existing && pin.length < 4){ errEl.textContent = "Ingresa un PIN de al menos 4 caracteres para el nuevo operador."; errEl.hidden = false; return; }
+    if (!existing && pin.length < 4){ errEl.textContent = "Ingresa un PIN de al menos 4 caracteres para la nueva cuenta."; errEl.hidden = false; return; }
     if (pin && pin.length < 4){ errEl.textContent = "El PIN debe tener al menos 4 caracteres."; errEl.hidden = false; return; }
     if (pin !== pin2){ errEl.textContent = "Los PIN no coinciden."; errEl.hidden = false; return; }
+    if (isAdmin && existing && existing.superadmin && !document.getElementById("operatorSuperadmin").checked &&
+        state.admins.filter(function(a){ return a.superadmin; }).length <= 1){
+      errEl.textContent = "No puedes quitarle el rol de super administrador al único que queda."; errEl.hidden = false; return;
+    }
     var applyAndSave = function(hash){
-      if (existing){
-        existing.username = user;
-        if (hash) existing.pinHash = hash;
+      if (isAdmin){
+        if (existing){
+          existing.username = user;
+          existing.superadmin = document.getElementById("operatorSuperadmin").checked;
+          if (hash) existing.pinHash = hash;
+        } else {
+          state.admins.push({ id: uid(), username: user, pinHash: hash, superadmin: document.getElementById("operatorSuperadmin").checked });
+        }
       } else {
-        state.operators.push({ id: uid(), centro: operatorFormCentro, username: user, pinHash: hash });
+        if (existing){
+          existing.username = user;
+          if (hash) existing.pinHash = hash;
+        } else {
+          state.operators.push({ id: uid(), centro: operatorFormCentro, username: user, pinHash: hash });
+        }
       }
       document.getElementById("operatorFormOverlay").hidden = true;
       persistState();
@@ -1499,7 +1600,7 @@
   }
   function renderApp(){
     renderSyncBar();
-    if (!state.admin){
+    if (!state.admins || state.admins.length === 0){
       showScreen(backupDirHandle || !fsSupported() || skippedConnect ? "screenSetup" : "screenConnect");
       return;
     }
@@ -1509,7 +1610,7 @@
     }
     showScreen("appContent");
     document.getElementById("whoUser").textContent = currentUser.username + (currentUser.role === "operator" ? (" · " + centerLabel(currentUser.centro)) : "");
-    document.getElementById("whoRole").textContent = currentUser.role === "admin" ? "Administrador" : "Operador";
+    document.getElementById("whoRole").textContent = currentUser.role === "admin" ? (currentUser.superadmin ? "Super administrador" : "Administrador") : "Operador";
     document.getElementById("btnManageOperators").hidden = currentUser.role !== "admin";
     document.getElementById("refDateInput").value = uiRefDate;
     renderCenterTabs();
