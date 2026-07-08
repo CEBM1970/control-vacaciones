@@ -1,0 +1,1455 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Control de Vacaciones — Multi Centro</title>
+<style>
+  :root {
+    --surface-1:      #fcfcfb;
+    --surface-2:      #ffffff;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-blue:    #2a78d6;
+    --series-blue-soft: #cde2fb;
+    --good:           #0ca30c;
+    --warning:        #b9790a;
+    --critical:       #d03b3b;
+    --good-bg:        #e6f6e6;
+    --warning-bg:     #fdf1dc;
+    --critical-bg:    #fbe7e7;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface-1:      #1a1a19;
+      --surface-2:      #201f1e;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-blue:    #3987e5;
+      --series-blue-soft: #184f95;
+      --good:           #0ca30c;
+      --warning:        #d99a1f;
+      --critical:       #e66767;
+      --good-bg:        #10240f;
+      --warning-bg:     #2a2110;
+      --critical-bg:    #2c1414;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--text-primary);
+    font-variant-numeric: proportional-nums;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 16px 20px 60px; }
+  header.app { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; justify-content:space-between; margin-bottom: 14px; }
+  header.app h1 { font-size: 22px; margin: 0 0 4px; }
+  header.app p { margin: 0; color: var(--text-secondary); font-size: 13.5px; max-width: 560px; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom: 16px; }
+  button, .btn {
+    font: inherit; font-size: 13.5px; cursor:pointer; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary);
+    padding: 8px 13px; display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+  }
+  button:hover { border-color: var(--series-blue); }
+  button.primary { background: var(--series-blue); color:#fff; border-color: var(--series-blue); }
+  button.primary:hover { filter: brightness(1.06); }
+  button.ghost { background: transparent; }
+  button.small { padding: 5px 9px; font-size: 12.5px; }
+  button.danger:hover { border-color: var(--critical); color: var(--critical); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  input, select {
+    font: inherit; font-size: 13.5px; padding: 7px 9px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary);
+  }
+  label.field { display:flex; flex-direction:column; gap:4px; font-size:12.5px; color:var(--text-secondary); }
+
+  .stat-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:12px; margin-bottom: 22px; }
+  .stat-tile { background: var(--surface-1); border:1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .stat-tile .num { font-size: 26px; font-weight: 600; line-height:1.1; }
+  .stat-tile .label { font-size: 12px; color: var(--text-secondary); margin-top:4px; }
+
+  .panel { background: var(--surface-1); border:1px solid var(--border); border-radius: var(--radius); overflow:hidden; margin-bottom:20px; }
+  .panel > .panel-head { padding: 12px 16px; border-bottom:1px solid var(--gridline); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .panel > .panel-head h2 { font-size: 15px; margin:0; }
+  .panel-body { padding: 4px 0 8px; }
+
+  table { width:100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align:left; padding: 10px 14px; border-bottom: 1px solid var(--gridline); vertical-align: middle; }
+  th { font-size: 11.5px; text-transform:uppercase; letter-spacing:.03em; color: var(--text-muted); font-weight:600; }
+  tbody tr:hover { background: rgba(42,120,214,0.05); }
+  td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; }
+  tr.emp-row { cursor:pointer; }
+  tr.emp-row.selected { background: rgba(42,120,214,0.08); }
+
+  .badge { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; padding:3px 8px; border-radius:999px; }
+  .badge.good { background: var(--good-bg); color: var(--good); }
+  .badge.warning { background: var(--warning-bg); color: var(--warning); }
+  .badge.critical { background: var(--critical-bg); color: var(--critical); }
+  .badge.progressive { background: var(--series-blue-soft); color: var(--series-blue); }
+
+  .bar { position:relative; width: 90px; height:8px; border-radius:4px; background: var(--gridline); overflow:hidden; }
+  .bar > span { position:absolute; left:0; top:0; bottom:0; background: var(--series-blue); border-radius:4px; }
+  .bar.over > span { background: var(--critical); }
+
+  .empty-state { padding: 34px 16px; text-align:center; color: var(--text-secondary); font-size:13.5px; }
+
+  .detail-drawer { padding: 14px 16px 18px; border-top: 1px dashed var(--gridline); background: rgba(42,120,214,0.03); }
+  .detail-grid { display:grid; grid-template-columns: 1.1fr 1fr; gap: 18px; }
+  @media (max-width: 800px) { .detail-grid { grid-template-columns: 1fr; } }
+  .detail-grid h3 { font-size: 13px; margin: 0 0 8px; color: var(--text-secondary); text-transform:uppercase; letter-spacing:.03em; }
+  .mini-table { font-size: 12.5px; }
+  .mini-table td, .mini-table th { padding: 6px 8px; }
+  .form-row { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px; }
+  .note { font-size: 12px; color: var(--text-muted); margin-top:6px; line-height:1.5; }
+
+  .overlay { position:fixed; inset:0; background: rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:50; padding:20px; }
+  .overlay[hidden] { display:none; }
+  .modal { background: var(--surface-1); border-radius: var(--radius); width: 100%; max-width: 440px; padding: 20px 22px; border:1px solid var(--border); }
+  .modal h2 { font-size:16px; margin: 0 0 14px; }
+  .modal .form-col { display:flex; flex-direction:column; gap:10px; margin-bottom: 14px; }
+  .modal .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:6px; }
+
+  .holiday-list { max-height: 220px; overflow:auto; font-size: 12.5px; }
+  .holiday-list .hol-item { display:flex; justify-content:space-between; align-items:center; padding: 5px 0; border-bottom:1px dotted var(--gridline); gap:8px; }
+  .hol-item .name { color: var(--text-secondary); }
+  .tag-disabled { text-decoration: line-through; color: var(--text-muted); }
+
+  .footer-note { margin-top: 26px; font-size: 12px; color: var(--text-muted); line-height:1.6; }
+  .link-btn { background:none;border:none;color:var(--series-blue);cursor:pointer;padding:0;font:inherit;text-decoration:underline; }
+
+  .sync-bar { width:100%; display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12.5px; color:var(--text-secondary); background:var(--surface-1); border:1px solid var(--border); border-radius:8px; padding:7px 12px; margin-bottom:14px; }
+  .sync-dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .sync-dot.ok { background: var(--good); }
+  .sync-dot.warn { background: var(--warning); }
+  .sync-dot.off { background: var(--text-muted); }
+  .sync-dot.err { background: var(--critical); }
+
+  .auth-screen { min-height:60vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .auth-card { background: var(--surface-1); border:1px solid var(--border); border-radius: var(--radius); padding:28px 26px; width:100%; max-width:400px; }
+  .auth-card h2 { margin:0 0 6px; font-size:18px; }
+  .auth-card p.sub { margin:0 0 18px; color: var(--text-secondary); font-size:13px; line-height:1.5; }
+  .auth-card .form-col { display:flex; flex-direction:column; gap:12px; margin-bottom:14px; }
+  .auth-error { color: var(--critical); font-size:12.5px; margin: -4px 0 6px; }
+  .auth-card .actions { display:flex; flex-direction:column; gap:8px; }
+
+  .topbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:14px; padding:10px 14px; background: var(--surface-1); border:1px solid var(--border); border-radius: var(--radius); }
+  .topbar .who { font-size:13px; color: var(--text-secondary); }
+  .topbar .who strong { color: var(--text-primary); }
+  .role-pill { display:inline-flex; padding:2px 8px; border-radius:999px; background: var(--series-blue-soft); color: var(--series-blue); font-size:11px; font-weight:600; margin-left:6px; }
+  .topbar-actions { display:flex; gap:8px; flex-wrap:wrap; }
+
+  .center-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+  .center-tab { padding:7px 14px; border-radius:999px; border:1px solid var(--border); background: var(--surface-2); cursor:pointer; font-size:12.5px; }
+  .center-tab.active { background: var(--series-blue); color:#fff; border-color: var(--series-blue); }
+
+  .operators-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:12px; }
+  .operator-card { border:1px solid var(--border); border-radius: var(--radius); padding:14px; background: var(--surface-1); }
+  .operator-card h4 { margin:0 0 8px; font-size:13.5px; }
+  .operator-card .op-user { font-size:12.5px; color: var(--text-secondary); margin-bottom:10px; min-height:16px; }
+  .operator-card .op-actions { display:flex; gap:6px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="sync-bar" id="globalSyncBar"></div>
+
+  <!-- Pantalla: conectar carpeta compartida -->
+  <div class="auth-screen" id="screenConnect" hidden>
+    <div class="auth-card">
+      <h2>Control de Vacaciones — Multi Centro</h2>
+      <p class="sub">Esta app comparte los datos de los 4 centros de negocio (Administración, Talca, Los Ángeles y Aserradero) a
+        través de una carpeta de Google Drive sincronizada en cada computador. Conecta la carpeta compartida para continuar.</p>
+      <div class="actions">
+        <button class="primary" id="btnConnectFolder">Conectar carpeta compartida de Drive</button>
+        <button class="ghost small" id="btnConnectSkip">Continuar sin conectar (modo local, sin sincronizar)</button>
+      </div>
+      <p class="note">Si eres el administrador y es la primera vez que configuras esto, elige o crea una carpeta dentro de tu
+        Google Drive (idealmente compartida con los 4 centros) y esta app guardará ahí el archivo de datos compartido.</p>
+    </div>
+  </div>
+
+  <!-- Pantalla: configuración inicial (crear administrador) -->
+  <div class="auth-screen" id="screenSetup" hidden>
+    <div class="auth-card">
+      <h2>Configuración inicial</h2>
+      <p class="sub">No hay un administrador configurado todavía. Crea la cuenta de administrador; luego podrás crear los
+        operadores autorizados de cada centro.</p>
+      <div class="form-col">
+        <label class="field">Usuario administrador
+          <input type="text" id="setupAdminUser" placeholder="Ej: admin">
+        </label>
+        <label class="field">PIN (mínimo 4 caracteres)
+          <input type="password" id="setupAdminPin" placeholder="••••">
+        </label>
+        <label class="field">Confirmar PIN
+          <input type="password" id="setupAdminPin2" placeholder="••••">
+        </label>
+      </div>
+      <div class="auth-error" id="setupError" hidden></div>
+      <div class="actions">
+        <button class="primary" id="btnSetupSave">Crear administrador</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pantalla: login -->
+  <div class="auth-screen" id="screenLogin" hidden>
+    <div class="auth-card">
+      <h2>Iniciar sesión</h2>
+      <p class="sub">Ingresa con tu usuario y PIN. El administrador define el acceso de cada centro de negocio.</p>
+      <div class="form-col">
+        <label class="field">Usuario
+          <input type="text" id="loginUser" placeholder="Tu usuario">
+        </label>
+        <label class="field">PIN
+          <input type="password" id="loginPin" placeholder="••••">
+        </label>
+      </div>
+      <div class="auth-error" id="loginError" hidden></div>
+      <div class="actions">
+        <button class="primary" id="btnLogin">Ingresar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App principal (autenticado) -->
+  <div id="appContent" hidden>
+
+    <header class="app">
+      <div>
+        <h1>Control de Vacaciones del Personal</h1>
+        <p>Feriado legal de 15 días hábiles anuales por aniversario de ingreso, con feriado progresivo (+1 día por cada 3 años tras cumplir 10 años de antigüedad).</p>
+      </div>
+    </header>
+
+    <div class="topbar">
+      <div class="who">Conectado como <strong id="whoUser"></strong><span class="role-pill" id="whoRole"></span></div>
+      <div class="topbar-actions">
+        <button class="ghost small" id="btnMyPin">Cambiar mi PIN</button>
+        <button class="ghost small" id="btnManageOperators" hidden>Gestionar operadores</button>
+        <button class="ghost small danger" id="btnLogout">Cerrar sesión</button>
+      </div>
+    </div>
+
+    <div class="center-tabs" id="centerTabs" hidden></div>
+
+    <div class="toolbar">
+      <label class="field">Fecha de cálculo
+        <input type="date" id="refDateInput">
+      </label>
+      <button class="ghost small" id="btnHolidays" style="align-self:flex-end;">⚙ Feriados</button>
+      <button class="ghost small" id="btnExportJson" style="align-self:flex-end;">Exportar datos (JSON)</button>
+      <button class="ghost small" id="btnImportJson" style="align-self:flex-end;">Importar datos</button>
+      <input type="file" id="fileImport" accept="application/json" hidden>
+      <button class="ghost small" id="btnExportCsv" style="align-self:flex-end;">Exportar CSV</button>
+      <button class="primary small" id="btnAddEmployee" style="align-self:flex-end;">+ Colaborador</button>
+    </div>
+
+    <div class="stat-row" id="statRow"></div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2 id="panelTitle">Colaboradores</h2>
+        <span class="note" style="margin:0;">Clic en una fila para ver el detalle y registrar vacaciones tomadas.</span>
+      </div>
+      <div class="panel-body" id="tableHost"></div>
+    </div>
+
+    <div class="footer-note">
+      <strong>Metodología:</strong> el año de vacaciones se cuenta desde la fecha de ingreso (aniversario), no desde el año calendario, y
+      otorga 15 días hábiles por año. El <strong>feriado progresivo</strong> se calcula según el artículo 68 del Código del Trabajo: todo
+      trabajador con <strong>10 años de trabajo</strong> (para uno o más empleadores, continuos o no) tiene derecho a 1 día adicional por
+      cada 3 años nuevos trabajados con el empleador actual; la ley reconoce <strong>hasta 10 años</strong> de servicios prestados a
+      empleadores anteriores para completar esa base. En la ficha de cada colaborador puedes indicar esos años reconocidos (si aplica y
+      cuenta con respaldo, por ejemplo certificados de cotizaciones de AFP); si no se indica nada, se asume que toda la antigüedad es con el
+      empleador actual y el primer día progresivo se gana al cumplir 13 años (10 + 3), el segundo a los 16, y así sucesivamente. Los días se
+      devengan proporcionalmente mes a mes dentro del año en curso. El conteo de días hábiles excluye sábados, domingos y feriados legales
+      (ajustables en <button class="link-btn" onclick="document.getElementById('btnHolidays').click()">Feriados</button>).
+      Cada centro de negocio (Administración, Talca, Los Ángeles, Aserradero) solo es accesible por su operador autorizado; el administrador
+      puede ver y editar los 4. El acceso por usuario/PIN es un control práctico para uso diario del equipo — al ser una app sin servidor,
+      no equivale a seguridad de nivel empresarial. Los datos se sincronizan entre computadores a través de la carpeta compartida de Drive
+      (barra superior) cada ~20 segundos; evita que dos personas editen el mismo centro exactamente al mismo tiempo para prevenir choques.
+    </div>
+
+  </div>
+
+</div>
+
+<!-- Modal: nuevo/editar colaborador -->
+<div class="overlay" id="empOverlay" hidden>
+  <div class="modal">
+    <h2 id="empModalTitle">Nuevo colaborador</h2>
+    <div class="form-col">
+      <label class="field">Nombre completo
+        <input type="text" id="empNombre" placeholder="Ej: María Pérez">
+      </label>
+      <label class="field">Cargo / Área (opcional)
+        <input type="text" id="empCargo" placeholder="Ej: Analista de RRHH">
+      </label>
+      <label class="field">Fecha de ingreso
+        <input type="date" id="empFechaIngreso">
+      </label>
+      <label class="field">Años reconocidos de servicios con empleadores anteriores (tope legal 10)
+        <input type="number" id="empAniosAnteriores" min="0" max="10" step="1" placeholder="0">
+      </label>
+    </div>
+    <p class="note" style="margin:-6px 0 12px;">Solo si aplica: art. 68 del Código del Trabajo reconoce hasta 10 años trabajados con empleadores
+      anteriores (continuos o no) para efectos del feriado progresivo. Debe estar respaldado por certificados de cotizaciones u otro medio de
+      prueba; si no aplica, deja en 0.</p>
+    <div class="actions">
+      <button class="ghost" id="empCancel">Cancelar</button>
+      <button class="primary" id="empSave">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: feriados -->
+<div class="overlay" id="holOverlay" hidden>
+  <div class="modal" style="max-width:520px;">
+    <h2>Feriados considerados</h2>
+    <label class="field" style="margin-bottom:10px;">Año
+      <select id="holYearSelect"></select>
+    </label>
+    <div class="holiday-list" id="holidayList"></div>
+    <div class="form-row" id="holAddRow" style="margin-top:14px;">
+      <label class="field">Fecha
+        <input type="date" id="holNewDate">
+      </label>
+      <label class="field" style="flex:1;">Nombre
+        <input type="text" id="holNewName" placeholder="Ej: Feriado regional">
+      </label>
+      <button class="primary small" id="holAdd">Agregar</button>
+    </div>
+    <p class="note" id="holEditNote">Los feriados con ⛔ fueron deshabilitados manualmente y no se descuentan de los días hábiles. Solo el administrador puede editarlos.</p>
+    <div class="actions">
+      <button class="ghost" id="holClose">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: gestión de operadores (admin) -->
+<div class="overlay" id="operatorsOverlay" hidden>
+  <div class="modal" style="max-width:640px;">
+    <h2>Operadores autorizados por centro</h2>
+    <p class="note" style="margin:0 0 14px;">Cada centro de negocio solo puede ser accedido por su operador autorizado. Crea, edita o quita el acceso.</p>
+    <div class="operators-grid" id="operatorsGrid"></div>
+    <div class="actions" style="margin-top:16px;">
+      <button class="ghost" id="operatorsClose">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: crear/editar operador -->
+<div class="overlay" id="operatorFormOverlay" hidden>
+  <div class="modal">
+    <h2 id="operatorFormTitle">Operador</h2>
+    <div class="form-col">
+      <label class="field">Centro
+        <input type="text" id="operatorCentroLabel" disabled>
+      </label>
+      <label class="field">Usuario
+        <input type="text" id="operatorUser" placeholder="Ej: talca.operador">
+      </label>
+      <label class="field">PIN (mínimo 4 caracteres)
+        <input type="password" id="operatorPin" placeholder="Dejar en blanco para no cambiar" autocomplete="new-password">
+      </label>
+      <label class="field">Confirmar PIN
+        <input type="password" id="operatorPin2" placeholder="Repite el PIN">
+      </label>
+    </div>
+    <div class="auth-error" id="operatorFormError" hidden></div>
+    <div class="actions">
+      <button class="ghost" id="operatorFormCancel">Cancelar</button>
+      <button class="primary" id="operatorFormSave">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: cambiar mi PIN -->
+<div class="overlay" id="pinOverlay" hidden>
+  <div class="modal">
+    <h2>Cambiar mi PIN</h2>
+    <div class="form-col">
+      <label class="field">Nuevo PIN (mínimo 4 caracteres)
+        <input type="password" id="myNewPin">
+      </label>
+      <label class="field">Confirmar nuevo PIN
+        <input type="password" id="myNewPin2">
+      </label>
+    </div>
+    <div class="auth-error" id="pinFormError" hidden></div>
+    <div class="actions">
+      <button class="ghost" id="pinFormCancel">Cancelar</button>
+      <button class="primary" id="pinFormSave">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- Centros de negocio ----------
+  var CENTERS = [
+    { key: "administracion", nombre: "Administración" },
+    { key: "talca", nombre: "Talca" },
+    { key: "los_angeles", nombre: "Los Ángeles" },
+    { key: "aserradero", nombre: "Aserradero" }
+  ];
+  function centerLabel(key){
+    var c = CENTERS.filter(function(c){ return c.key === key; })[0];
+    return c ? c.nombre : key;
+  }
+
+  // ---------- Utilidades de fecha ----------
+  function pad(n){ return String(n).padStart(2,"0"); }
+  function toISO(d){ return d.getUTCFullYear()+"-"+pad(d.getUTCMonth()+1)+"-"+pad(d.getUTCDate()); }
+  function parseISO(s){
+    var p = s.split("-").map(Number);
+    return new Date(Date.UTC(p[0], p[1]-1, p[2]));
+  }
+  function todayISO(){
+    var n = new Date();
+    return toISO(new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())));
+  }
+  function addDays(d, n){ var r = new Date(d.getTime()); r.setUTCDate(r.getUTCDate()+n); return r; }
+  function uid(){ return "id" + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+  function fmtTime(d){ if (!d) return ""; return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()); }
+  function escapeHtml(str){
+    return String(str).replace(/[&<>"']/g, function(c){
+      return { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c];
+    });
+  }
+
+  // ---------- Feriados de Chile (referencia, editable por el administrador) ----------
+  function gregorianEaster(year){
+    var a=year%19, b=Math.floor(year/100), c=year%100, d=Math.floor(b/4), e=b%4,
+        f=Math.floor((b+8)/25), g=Math.floor((b-f+1)/3),
+        h=(19*a+b-d-g+15)%30, i=Math.floor(c/4), k=c%4,
+        l=(32+2*e+2*i-h-k)%7, m=Math.floor((a+11*h+22*l)/451),
+        month=Math.floor((h+l-7*m+114)/31), day=((h+l-7*m+114)%31)+1;
+    return new Date(Date.UTC(year, month-1, day));
+  }
+  var FIXED_HOLIDAYS = [
+    ["01-01","Año Nuevo"],
+    ["05-01","Día del Trabajo"],
+    ["05-21","Día de las Glorias Navales"],
+    ["06-29","San Pedro y San Pablo"],
+    ["07-16","Día de la Virgen del Carmen"],
+    ["08-15","Asunción de la Virgen"],
+    ["09-18","Independencia Nacional"],
+    ["09-19","Día de las Glorias del Ejército"],
+    ["10-12","Encuentro de Dos Mundos"],
+    ["10-31","Día de las Iglesias Evangélicas y Protestantes"],
+    ["11-01","Día de Todos los Santos"],
+    ["12-08","Inmaculada Concepción"],
+    ["12-25","Navidad"]
+  ];
+  function defaultHolidaysForYear(year){
+    var list = FIXED_HOLIDAYS.map(function(h){ return { date: year+"-"+h[0], nombre: h[1] }; });
+    var easter = gregorianEaster(year);
+    var goodFriday = addDays(easter, -2);
+    var holySaturday = addDays(easter, -1);
+    list.push({ date: toISO(goodFriday), nombre: "Viernes Santo" });
+    list.push({ date: toISO(holySaturday), nombre: "Sábado Santo" });
+    list.sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+    return list;
+  }
+
+  // ---------- Estado compartido (sincronizado) ----------
+  function defaultState(){
+    var centers = {};
+    CENTERS.forEach(function(c){ centers[c.key] = { nombre: c.nombre, employees: [] }; });
+    return {
+      updatedAt: null,
+      admin: null,
+      operators: [],
+      centers: centers,
+      customHolidays: [],
+      disabledHolidays: []
+    };
+  }
+  function normalizeState(raw){
+    var base = defaultState();
+    if (!raw || typeof raw !== "object") return base;
+    var centers = {};
+    CENTERS.forEach(function(c){
+      var existing = raw.centers && raw.centers[c.key];
+      centers[c.key] = { nombre: c.nombre, employees: (existing && Array.isArray(existing.employees)) ? existing.employees : [] };
+    });
+    return {
+      updatedAt: raw.updatedAt || null,
+      admin: raw.admin && raw.admin.username ? { username: raw.admin.username, pinHash: raw.admin.pinHash } : null,
+      operators: Array.isArray(raw.operators) ? raw.operators.map(function(o){
+        return { id: o.id || uid(), centro: o.centro, username: o.username, pinHash: o.pinHash };
+      }) : [],
+      centers: centers,
+      customHolidays: Array.isArray(raw.customHolidays) ? raw.customHolidays : [],
+      disabledHolidays: Array.isArray(raw.disabledHolidays) ? raw.disabledHolidays : []
+    };
+  }
+
+  var state = defaultState();
+  var currentUser = null;           // { role: 'admin'|'operator', username, centro? }
+  var uiAdminActiveCenter = CENTERS[0].key;
+  var uiSelectedEmployee = null;
+  var uiEditingEmployeeId = null;
+  var uiRefDate = todayISO();       // parámetro local de vista, no se sincroniza
+  var skippedConnect = false;       // el usuario eligió continuar sin conectar la carpeta compartida
+
+  // ---------- PIN hashing (control práctico, no seguridad de nivel empresarial) ----------
+  function hashPin(pin){
+    if (!window.crypto || !window.crypto.subtle){
+      // Fallback muy simple si Web Crypto no está disponible (contextos no seguros)
+      var h = 0;
+      var s = "vac-salt-" + pin;
+      for (var i=0;i<s.length;i++){ h = (h*31 + s.charCodeAt(i)) | 0; }
+      return Promise.resolve("fallback-" + (h >>> 0).toString(16));
+    }
+    var enc = new TextEncoder().encode("vac-salt-" + pin);
+    return crypto.subtle.digest("SHA-256", enc).then(function(buf){
+      return Array.prototype.map.call(new Uint8Array(buf), function(b){ return b.toString(16).padStart(2,"0"); }).join("");
+    });
+  }
+  function usernameTaken(username, excludeCentro){
+    var u = username.trim().toLowerCase();
+    if (state.admin && state.admin.username.toLowerCase() === u) return true;
+    return state.operators.some(function(o){ return o.centro !== excludeCentro && o.username.toLowerCase() === u; });
+  }
+  function getOperatorForCenter(key){
+    return state.operators.filter(function(o){ return o.centro === key; })[0] || null;
+  }
+
+  // ---------- Persistencia local (IndexedDB) + sincronización en carpeta compartida ----------
+  var backupDirHandle = null;
+  var syncInfo = { state: "off", time: null, message: "" }; // off|connecting|synced|needs-permission|error
+  var syncTimer = null;
+  var pollIntervalId = null;
+  var IDB_NAME = "control_vacaciones_db", IDB_STORE = "kv";
+  var SYNC_FILENAME = "control_vacaciones_sync.json";
+
+  function idbSupported(){ return typeof indexedDB !== "undefined"; }
+  function fsSupported(){ return typeof window.showDirectoryPicker === "function"; }
+
+  function openIDB(){
+    return new Promise(function(resolve, reject){
+      if (!idbSupported()) { reject(new Error("IndexedDB no disponible")); return; }
+      var req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = function(e){
+        var db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = function(){ resolve(req.result); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+  function idbGet(key){
+    return openIDB().then(function(db){
+      return new Promise(function(resolve, reject){
+        var tx = db.transaction(IDB_STORE, "readonly");
+        var r = tx.objectStore(IDB_STORE).get(key);
+        r.onsuccess = function(){ resolve(r.result); };
+        r.onerror = function(){ reject(r.error); };
+      });
+    });
+  }
+  function idbSet(key, val){
+    return openIDB().then(function(db){
+      return new Promise(function(resolve, reject){
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put(val, key);
+        tx.oncomplete = function(){ resolve(); };
+        tx.onerror = function(){ reject(tx.error); };
+      });
+    });
+  }
+
+  function persistState(){
+    state.updatedAt = new Date().toISOString();
+    if (idbSupported()) idbSet("appState", state).catch(function(){});
+    scheduleSync();
+  }
+  function onDataChanged(){
+    persistState();
+    renderApp();
+  }
+
+  function overlayMergeAuthoritative(mergedBase){
+    // Sobrescribe solo las secciones sobre las que el usuario actual tiene autoridad,
+    // conservando lo remoto para el resto (para no pisar cambios de otros centros).
+    if (currentUser && currentUser.role === "operator"){
+      mergedBase.centers[currentUser.centro] = state.centers[currentUser.centro];
+    } else if (currentUser && currentUser.role === "admin"){
+      mergedBase.centers[uiAdminActiveCenter] = state.centers[uiAdminActiveCenter];
+      mergedBase.admin = state.admin;
+      mergedBase.operators = state.operators;
+      mergedBase.customHolidays = state.customHolidays;
+      mergedBase.disabledHolidays = state.disabledHolidays;
+    } else {
+      // Sin sesión (asistente de configuración inicial): usar el estado local completo.
+      return normalizeState(state);
+    }
+    return mergedBase;
+  }
+
+  function scheduleSync(){
+    if (!backupDirHandle) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(doSync, 500);
+  }
+  function doSync(){
+    if (!backupDirHandle) return Promise.resolve();
+    return backupDirHandle.queryPermission({ mode: "readwrite" }).then(function(perm){
+      if (perm !== "granted"){
+        syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
+        renderSyncBar();
+        return;
+      }
+      return backupDirHandle.getFileHandle(SYNC_FILENAME, { create: true }).then(function(fh){
+        return fh.getFile().then(function(f){ return f.text(); }).catch(function(){ return ""; }).then(function(text){
+          var remoteRaw = null;
+          if (text){ try { remoteRaw = JSON.parse(text); } catch(e){ remoteRaw = null; } }
+          var merged = overlayMergeAuthoritative(remoteRaw ? normalizeState(remoteRaw) : normalizeState(state));
+          merged.updatedAt = new Date().toISOString();
+          return fh.createWritable().then(function(w){
+            return w.write(JSON.stringify(merged, null, 2)).then(function(){ return w.close(); });
+          }).then(function(){
+            state = merged;
+            if (idbSupported()) idbSet("appState", state).catch(function(){});
+          });
+        });
+      });
+    }).then(function(){
+      syncInfo = { state: "synced", time: new Date(), message: "" };
+      renderSyncBar();
+      renderApp();
+    }).catch(function(err){
+      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+      renderSyncBar();
+    });
+  }
+  function pollRemote(){
+    if (!backupDirHandle) return;
+    backupDirHandle.queryPermission({ mode: "readwrite" }).then(function(perm){
+      if (perm !== "granted"){
+        syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
+        renderSyncBar();
+        return;
+      }
+      return backupDirHandle.getFileHandle(SYNC_FILENAME, { create: false }).then(function(fh){
+        return fh.getFile();
+      }).then(function(file){
+        return file.text();
+      }).then(function(text){
+        var remote;
+        try { remote = JSON.parse(text); } catch(e){ return; }
+        if (remote && remote.updatedAt && (!state.updatedAt || remote.updatedAt > state.updatedAt)){
+          var merged = overlayMergeAuthoritative(normalizeState(remote));
+          state = merged;
+          if (idbSupported()) idbSet("appState", state).catch(function(){});
+          renderApp();
+        }
+        syncInfo = { state: "synced", time: new Date(), message: "" };
+        renderSyncBar();
+      }).catch(function(err){
+        if (err && err.name === "NotFoundError") return; // aún no existe el archivo remoto
+        syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+        renderSyncBar();
+      });
+    });
+  }
+  function startPolling(){
+    if (pollIntervalId) return;
+    pollIntervalId = setInterval(pollRemote, 20000);
+    window.addEventListener("focus", function(){ if (backupDirHandle) pollRemote(); });
+    document.addEventListener("visibilitychange", function(){ if (!document.hidden && backupDirHandle) pollRemote(); });
+  }
+
+  function connectSyncFolder(){
+    if (!fsSupported()){
+      alert("Tu navegador o esta vista no permite elegir una carpeta local (función disponible en Chrome/Edge de escritorio, abriendo el archivo directamente, no dentro de una vista previa embebida).");
+      return;
+    }
+    window.showDirectoryPicker({ id: "vacaciones-sync", mode: "readwrite" }).then(function(handle){
+      backupDirHandle = handle;
+      if (idbSupported()) idbSet("backupDir", handle).catch(function(){});
+      return loadFromFolder(handle);
+    }).catch(function(err){
+      if (err && err.name === "AbortError") return;
+      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+      renderSyncBar();
+    });
+  }
+  function loadFromFolder(handle){
+    return handle.getFileHandle(SYNC_FILENAME, { create: false }).then(function(fh){
+      return fh.getFile();
+    }).then(function(file){
+      return file.text();
+    }).then(function(text){
+      var remote = JSON.parse(text);
+      state = normalizeState(remote);
+      if (idbSupported()) idbSet("appState", state).catch(function(){});
+      syncInfo = { state: "synced", time: new Date(), message: "" };
+      startPolling();
+      renderApp();
+    }).catch(function(err){
+      if (err && (err.name === "NotFoundError" || err.name === "TypeMismatchError")){
+        // No existe archivo remoto todavía: este computador crea el primero.
+        syncInfo = { state: "synced", time: null, message: "" };
+        startPolling();
+        return doSync().then(renderApp);
+      }
+      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+      renderApp();
+    });
+  }
+  function reauthorizeFolder(){
+    if (!backupDirHandle) return connectSyncFolder();
+    backupDirHandle.requestPermission({ mode: "readwrite" }).then(function(perm){
+      if (perm === "granted"){
+        syncInfo = { state: "synced", time: syncInfo.time, message: "" };
+        startPolling();
+        pollRemote();
+      } else {
+        syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
+        renderSyncBar();
+      }
+    }).catch(function(err){
+      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+      renderSyncBar();
+    });
+  }
+
+  function renderSyncBar(){
+    var host = document.getElementById("globalSyncBar");
+    if (!host) return;
+    var dot = "off", text = "", actions = "";
+    if (!fsSupported()){
+      dot = "off";
+      text = "Sincronización con Drive no disponible en este navegador/vista. Abre el archivo directamente en Chrome o Edge de escritorio.";
+    } else if (!backupDirHandle){
+      dot = "off";
+      text = "Sin carpeta compartida conectada — los datos solo viven en este computador.";
+      actions = '<button class="small ghost" data-sync-action="connect">Conectar carpeta compartida</button>';
+    } else if (syncInfo.state === "synced"){
+      dot = "ok";
+      text = "Sincronizado con “" + escapeHtml(backupDirHandle.name) + "”" + (syncInfo.time ? (" · " + fmtTime(syncInfo.time)) : "");
+      actions = '<button class="small ghost" data-sync-action="connect">Cambiar carpeta</button>';
+    } else if (syncInfo.state === "needs-permission"){
+      dot = "warn";
+      text = "Reautoriza el acceso a la carpeta compartida para sincronizar.";
+      actions = '<button class="small ghost" data-sync-action="reauth">Reautorizar</button>';
+    } else if (syncInfo.state === "error"){
+      dot = "err";
+      text = "Error de sincronización" + (syncInfo.message ? (": " + escapeHtml(syncInfo.message)) : "") + ".";
+      actions = '<button class="small ghost" data-sync-action="connect">Reintentar / elegir carpeta</button>';
+    } else {
+      dot = "off";
+      text = "Conectando…";
+    }
+    host.innerHTML = '<span class="sync-dot ' + dot + '"></span><span style="flex:1;">' + text + '</span>' + actions;
+  }
+  document.getElementById("globalSyncBar").addEventListener("click", function(e){
+    var btn = e.target.closest("[data-sync-action]");
+    if (!btn) return;
+    var action = btn.getAttribute("data-sync-action");
+    if (action === "connect") connectSyncFolder();
+    else if (action === "reauth") reauthorizeFolder();
+  });
+  document.getElementById("btnConnectFolder").addEventListener("click", connectSyncFolder);
+  document.getElementById("btnConnectSkip").addEventListener("click", function(){
+    skippedConnect = true;
+    renderApp();
+  });
+
+  // ---------- Cálculo de feriados / días hábiles ----------
+  function holidaySetForYears(minYear, maxYear){
+    var map = {};
+    for (var y = minYear; y <= maxYear; y++){
+      defaultHolidaysForYear(y).forEach(function(h){ map[h.date] = h.nombre; });
+    }
+    state.disabledHolidays.forEach(function(d){ delete map[d]; });
+    state.customHolidays.forEach(function(h){ map[h.date] = h.nombre; });
+    return map;
+  }
+  function isBusinessDay(d, holMap){
+    var dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) return false;
+    if (holMap[toISO(d)]) return false;
+    return true;
+  }
+  function countBusinessDays(startISO, endISO){
+    if (!startISO || !endISO) return 0;
+    var start = parseISO(startISO), end = parseISO(endISO);
+    if (end < start) return 0;
+    var holMap = holidaySetForYears(start.getUTCFullYear(), end.getUTCFullYear());
+    var count = 0, cur = start;
+    while (cur <= end){
+      if (isBusinessDay(cur, holMap)) count++;
+      cur = addDays(cur, 1);
+    }
+    return count;
+  }
+
+  // ---------- Cálculo de feriado progresivo y devengo (Art. 68 Código del Trabajo) ----------
+  // "Todo trabajador, con diez años de trabajo, para uno o más empleadores, continuos o no,
+  //  tendrá derecho a un día adicional de feriado por cada tres nuevos años trabajados... Con
+  //  todo, sólo podrán hacerse valer hasta diez años de trabajo prestados a empleadores anteriores."
+  // Es decir: los 10 años base se completan combinando (a) años reconocidos con empleadores
+  // anteriores (tope 10) y (b) años con el empleador actual; una vez cumplidos los 10 años, cada
+  // 3 años NUEVOS trabajados con el empleador actual otorgan +1 día. Fuente: DT (dictamen 4551/222)
+  // y art. 68 del Código del Trabajo.
+  function priorRecognizedYears(rawPriorYears){
+    return Math.min(Math.max(0, Number(rawPriorYears) || 0), 10);
+  }
+  function progressiveThreshold(rawPriorYears){
+    // Años que deben cumplirse CON EL EMPLEADOR ACTUAL antes de empezar a sumar días progresivos.
+    return Math.max(0, 10 - priorRecognizedYears(rawPriorYears));
+  }
+  function entitlementForYear(n, threshold){
+    return 15 + Math.floor(Math.max(0, n - threshold) / 3);
+  }
+  function monthsBetween(ingresoISO, refISO){
+    var ingreso = parseISO(ingresoISO), ref = parseISO(refISO);
+    if (ref < ingreso) return 0;
+    var years = ref.getUTCFullYear() - ingreso.getUTCFullYear();
+    var months = ref.getUTCMonth() - ingreso.getUTCMonth();
+    var days = ref.getUTCDate() - ingreso.getUTCDate();
+    var total = years * 12 + months;
+    if (days < 0) total--;
+    return Math.max(0, total);
+  }
+  function computeAccrual(ingresoISO, refISO, rawPriorYears){
+    var threshold = progressiveThreshold(rawPriorYears);
+    var totalMonths = monthsBetween(ingresoISO, refISO);
+    var yearsCompleted = Math.floor(totalMonths / 12);
+    var monthsIntoCurrentYear = totalMonths % 12;
+    var accrued = 0;
+    for (var k = 1; k <= yearsCompleted; k++){ accrued += entitlementForYear(k, threshold); }
+    var currentYearEntitlement = entitlementForYear(yearsCompleted + 1, threshold);
+    accrued += monthsIntoCurrentYear * (currentYearEntitlement / 12);
+    var extraActive = currentYearEntitlement - 15;
+    return {
+      totalMonths: totalMonths,
+      yearsCompleted: yearsCompleted,
+      monthsIntoCurrentYear: monthsIntoCurrentYear,
+      currentYearEntitlement: currentYearEntitlement,
+      accrued: accrued,
+      extraActive: extraActive,
+      threshold: threshold,
+      priorYears: priorRecognizedYears(rawPriorYears)
+    };
+  }
+  function employeeSummary(emp){
+    var acc = computeAccrual(emp.fechaIngreso, uiRefDate, emp.aniosServiciosAnteriores);
+    var usados = 0;
+    emp.periodos.forEach(function(p){ usados += countBusinessDays(p.inicio, p.fin); });
+    var saldo = acc.accrued - usados;
+    return { acc: acc, usados: usados, saldo: saldo };
+  }
+  function activeCenterKey(){
+    return currentUser && currentUser.role === "operator" ? currentUser.centro : uiAdminActiveCenter;
+  }
+  function activeCenterEmployees(){
+    return state.centers[activeCenterKey()].employees;
+  }
+
+  // ---------- Render: utilidades ----------
+  function fmt1(n){ return (Math.round(n * 10) / 10).toFixed(1).replace(/\.0$/,""); }
+  function statusFor(saldo){
+    if (saldo < 0) return "critical";
+    if (saldo < 5) return "warning";
+    return "good";
+  }
+  function statusLabel(s){ return s === "critical" ? "Saldo negativo" : s === "warning" ? "Saldo bajo" : "Al día"; }
+
+  function renderStats(){
+    var host = document.getElementById("statRow");
+    var employees = activeCenterEmployees();
+    var totalEmp = employees.length;
+    var totalSaldo = 0, negativos = 0, progresivos = 0;
+    employees.forEach(function(emp){
+      var s = employeeSummary(emp);
+      totalSaldo += s.saldo;
+      if (s.saldo < 0) negativos++;
+      if (s.acc.extraActive > 0) progresivos++;
+    });
+    host.innerHTML =
+      tile(totalEmp, "Colaboradores") +
+      tile(fmt1(totalSaldo), "Días disponibles (total)") +
+      tile(negativos, "Con saldo negativo") +
+      tile(progresivos, "Con feriado progresivo");
+    function tile(num, label){
+      return '<div class="stat-tile"><div class="num">'+num+'</div><div class="label">'+label+'</div></div>';
+    }
+  }
+
+  function renderTable(){
+    var host = document.getElementById("tableHost");
+    var employees = activeCenterEmployees();
+    document.getElementById("panelTitle").textContent = "Colaboradores — " + centerLabel(activeCenterKey());
+    if (employees.length === 0){
+      host.innerHTML = '<div class="empty-state">Aún no hay colaboradores en este centro. Usa “+ Colaborador” para agregar el primero.</div>';
+      return;
+    }
+    var rows = employees.map(function(emp){
+      var s = employeeSummary(emp);
+      var status = statusFor(s.saldo);
+      var barPct = s.acc.accrued > 0 ? Math.min(100, (s.usados / s.acc.accrued) * 100) : 0;
+      var over = s.usados > s.acc.accrued;
+      var years = Math.floor(s.acc.totalMonths/12), months = s.acc.totalMonths%12;
+      var selected = uiSelectedEmployee === emp.id;
+      var progBadge = s.acc.extraActive > 0
+        ? '<span class="badge progressive" title="Feriado progresivo activo">+'+s.acc.extraActive+' progresivo</span>' : "";
+      var row =
+        '<tr class="emp-row'+(selected?' selected':'')+'" data-id="'+emp.id+'">'+
+          '<td><strong>'+escapeHtml(emp.nombre)+'</strong>'+(emp.cargo?'<div class="note" style="margin:2px 0 0;">'+escapeHtml(emp.cargo)+'</div>':'')+'</td>'+
+          '<td>'+emp.fechaIngreso+'</td>'+
+          '<td>'+years+'a '+months+'m</td>'+
+          '<td class="num">'+s.acc.currentYearEntitlement+' '+progBadge+'</td>'+
+          '<td class="num">'+fmt1(s.acc.accrued)+'</td>'+
+          '<td class="num">'+fmt1(s.usados)+'</td>'+
+          '<td class="num">'+
+            '<div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">'+
+              '<span class="badge '+status+'" title="'+statusLabel(status)+'">'+fmt1(s.saldo)+'</span>'+
+              '<span class="bar'+(over?' over':'')+'" title="'+fmt1(s.usados)+' usados de '+fmt1(s.acc.accrued)+' devengados"><span style="width:'+barPct+'%"></span></span>'+
+            '</div>'+
+          '</td>'+
+          '<td>'+
+            '<button class="small ghost" data-action="edit" data-id="'+emp.id+'">Editar</button> '+
+            '<button class="small danger ghost" data-action="delete" data-id="'+emp.id+'">Eliminar</button>'+
+          '</td>'+
+        '</tr>';
+      if (selected){
+        row += '<tr><td colspan="8" style="padding:0;border-bottom:1px solid var(--gridline);">'+renderDetail(emp, s)+'</td></tr>';
+      }
+      return row;
+    }).join("");
+    host.innerHTML =
+      '<table><thead><tr>'+
+        '<th>Nombre</th><th>Ingreso</th><th>Antigüedad</th><th class="num">Días/año vigentes</th>'+
+        '<th class="num">Devengados</th><th class="num">Usados</th><th class="num">Saldo</th><th>Acciones</th>'+
+      '</tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+
+  function renderDetail(emp, s){
+    var yearsRows = "";
+    for (var y = 1; y <= Math.max(s.acc.yearsCompleted, 1); y++){
+      var ent = entitlementForYear(y, s.acc.threshold);
+      yearsRows += '<tr><td>Año '+y+'</td><td class="num">'+ent+(ent>15?' <span class="note" style="display:inline;">(progresivo)</span>':'')+'</td></tr>';
+      if (y > s.acc.yearsCompleted) break;
+    }
+    var priorNote = s.acc.priorYears > 0
+      ? '<p class="note">Años reconocidos de empleadores anteriores: <strong>'+s.acc.priorYears+'</strong> (tope legal 10).'+
+        (s.acc.threshold > 0
+          ? ' Con el empleador actual, debe cumplir <strong>'+s.acc.threshold+' años</strong> para completar los 10 años base; desde ahí suma 1 día cada 3 años nuevos.'
+          : ' Como ya cumple los 10 años base, suma 1 día cada 3 años trabajados con el empleador actual desde el ingreso mismo.')+
+        '</p>'
+      : "";
+    var periodosRows = emp.periodos.length
+      ? emp.periodos.map(function(p){
+          var dias = countBusinessDays(p.inicio, p.fin);
+          return '<tr><td>'+p.inicio+' → '+p.fin+'</td><td class="num">'+dias+'</td><td>'+escapeHtml(p.nota||"")+'</td>'+
+                 '<td><button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button></td></tr>';
+        }).join("")
+      : '<tr><td colspan="4" class="note">Sin periodos registrados.</td></tr>';
+
+    return (
+      '<div class="detail-drawer">'+
+        '<div class="detail-grid">'+
+          '<div>'+
+            '<h3>Devengo por año de antigüedad</h3>'+
+            '<table class="mini-table"><thead><tr><th>Periodo</th><th class="num">Días</th></tr></thead>'+
+            '<tbody>'+yearsRows+'</tbody></table>'+
+            '<p class="note">Año en curso ('+ (s.acc.yearsCompleted+1) +'): '+s.acc.currentYearEntitlement+' días/año, '+
+              s.acc.monthsIntoCurrentYear+' de 12 meses transcurridos → '+fmt1(s.acc.monthsIntoCurrentYear*(s.acc.currentYearEntitlement/12))+' días devengados este periodo.</p>'+
+            priorNote+
+          '</div>'+
+          '<div>'+
+            '<h3>Vacaciones tomadas</h3>'+
+            '<table class="mini-table"><thead><tr><th>Rango</th><th class="num">Días hábiles</th><th>Nota</th><th></th></tr></thead>'+
+            '<tbody>'+periodosRows+'</tbody></table>'+
+            '<div class="form-row" style="margin-top:10px;">'+
+              '<label class="field">Inicio<input type="date" id="periodoInicio_'+emp.id+'"></label>'+
+              '<label class="field">Fin<input type="date" id="periodoFin_'+emp.id+'"></label>'+
+              '<label class="field" style="flex:1;">Nota<input type="text" id="periodoNota_'+emp.id+'" placeholder="Opcional"></label>'+
+              '<button class="primary small" data-action="add-periodo" data-emp="'+emp.id+'">Agregar</button>'+
+            '</div>'+
+          '</div>'+
+        '</div>'+
+      '</div>'
+    );
+  }
+
+  document.getElementById("tableHost").addEventListener("click", function(e){
+    var actionBtn = e.target.closest("[data-action]");
+    if (actionBtn){
+      e.stopPropagation();
+      var action = actionBtn.getAttribute("data-action");
+      var employees = activeCenterEmployees();
+      if (action === "edit"){ openEmployeeModal(actionBtn.getAttribute("data-id")); return; }
+      if (action === "delete"){
+        var id = actionBtn.getAttribute("data-id");
+        var emp = employees.filter(function(x){ return x.id === id; })[0];
+        if (emp && confirm('¿Eliminar a "'+emp.nombre+'"? Esta acción no se puede deshacer.')){
+          state.centers[activeCenterKey()].employees = employees.filter(function(x){ return x.id !== id; });
+          if (uiSelectedEmployee === id) uiSelectedEmployee = null;
+          onDataChanged();
+        }
+        return;
+      }
+      if (action === "add-periodo"){
+        var empId = actionBtn.getAttribute("data-emp");
+        var inicio = document.getElementById("periodoInicio_"+empId).value;
+        var fin = document.getElementById("periodoFin_"+empId).value;
+        var nota = document.getElementById("periodoNota_"+empId).value;
+        if (!inicio || !fin){ alert("Selecciona fecha de inicio y fin."); return; }
+        if (parseISO(fin) < parseISO(inicio)){ alert("La fecha de fin no puede ser anterior a la de inicio."); return; }
+        var emp2 = employees.filter(function(x){ return x.id === empId; })[0];
+        emp2.periodos.push({ id: uid(), inicio: inicio, fin: fin, nota: nota });
+        onDataChanged();
+        return;
+      }
+      if (action === "del-periodo"){
+        var empId2 = actionBtn.getAttribute("data-emp");
+        var perId = actionBtn.getAttribute("data-periodo");
+        var emp3 = employees.filter(function(x){ return x.id === empId2; })[0];
+        emp3.periodos = emp3.periodos.filter(function(p){ return p.id !== perId; });
+        onDataChanged();
+        return;
+      }
+    }
+    var row = e.target.closest("tr.emp-row");
+    if (row){
+      var rid = row.getAttribute("data-id");
+      uiSelectedEmployee = (uiSelectedEmployee === rid) ? null : rid;
+      renderApp();
+    }
+  });
+
+  // ---------- Modal colaborador ----------
+  function openEmployeeModal(id){
+    uiEditingEmployeeId = id || null;
+    var emp = id ? activeCenterEmployees().filter(function(x){ return x.id === id; })[0] : null;
+    document.getElementById("empModalTitle").textContent = emp ? "Editar colaborador" : "Nuevo colaborador";
+    document.getElementById("empNombre").value = emp ? emp.nombre : "";
+    document.getElementById("empCargo").value = emp ? (emp.cargo||"") : "";
+    document.getElementById("empFechaIngreso").value = emp ? emp.fechaIngreso : "";
+    document.getElementById("empAniosAnteriores").value = emp ? (emp.aniosServiciosAnteriores || 0) : 0;
+    document.getElementById("empOverlay").hidden = false;
+  }
+  document.getElementById("btnAddEmployee").addEventListener("click", function(){ openEmployeeModal(null); });
+  document.getElementById("empCancel").addEventListener("click", function(){ document.getElementById("empOverlay").hidden = true; });
+  document.getElementById("empSave").addEventListener("click", function(){
+    var nombre = document.getElementById("empNombre").value.trim();
+    var cargo = document.getElementById("empCargo").value.trim();
+    var fecha = document.getElementById("empFechaIngreso").value;
+    var aniosAnteriores = Math.min(Math.max(0, Math.round(Number(document.getElementById("empAniosAnteriores").value) || 0)), 10);
+    if (!nombre || !fecha){ alert("Ingresa al menos el nombre y la fecha de ingreso."); return; }
+    var employees = activeCenterEmployees();
+    if (uiEditingEmployeeId){
+      var emp = employees.filter(function(x){ return x.id === uiEditingEmployeeId; })[0];
+      emp.nombre = nombre; emp.cargo = cargo; emp.fechaIngreso = fecha; emp.aniosServiciosAnteriores = aniosAnteriores;
+    } else {
+      employees.push({ id: uid(), nombre: nombre, cargo: cargo, fechaIngreso: fecha, aniosServiciosAnteriores: aniosAnteriores, periodos: [] });
+    }
+    document.getElementById("empOverlay").hidden = true;
+    onDataChanged();
+  });
+
+  // ---------- Fecha de referencia (local, no sincronizada) ----------
+  document.getElementById("refDateInput").addEventListener("change", function(e){
+    uiRefDate = e.target.value || todayISO();
+    renderApp();
+  });
+
+  // ---------- Modal feriados ----------
+  var holYear = new Date().getFullYear();
+  function renderHolidayModal(){
+    var isAdmin = currentUser && currentUser.role === "admin";
+    var sel = document.getElementById("holYearSelect");
+    sel.innerHTML = "";
+    for (var y = holYear-2; y <= holYear+5; y++){
+      var opt = document.createElement("option");
+      opt.value = y; opt.textContent = y;
+      if (y === holYear) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    var list = defaultHolidaysForYear(holYear).slice();
+    state.customHolidays.filter(function(h){ return h.date.indexOf(String(holYear)) === 0; })
+      .forEach(function(h){ list.push({date:h.date, nombre:h.nombre, custom:true}); });
+    list.sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+    var host = document.getElementById("holidayList");
+    host.innerHTML = list.map(function(h){
+      var disabled = state.disabledHolidays.indexOf(h.date) !== -1 && !h.custom;
+      var actionsHtml = "";
+      if (isAdmin){
+        actionsHtml = h.custom
+          ? '<button class="small ghost danger" data-hol-remove="'+h.date+'">Quitar</button>'
+          : '<button class="small ghost" data-hol-toggle="'+h.date+'">'+(disabled?'Habilitar':'Deshabilitar')+'</button>';
+      }
+      return '<div class="hol-item'+(disabled?' tag-disabled':'')+'">'+
+        '<span>'+h.date+' <span class="name">'+escapeHtml(h.nombre)+(h.custom?' (personalizado)':'')+'</span></span>'+
+        '<span>'+actionsHtml+'</span></div>';
+    }).join("");
+    document.getElementById("holAddRow").style.display = isAdmin ? "flex" : "none";
+    document.getElementById("holEditNote").style.display = isAdmin ? "block" : "none";
+  }
+  document.getElementById("btnHolidays").addEventListener("click", function(){
+    document.getElementById("holOverlay").hidden = false;
+    renderHolidayModal();
+  });
+  document.getElementById("holClose").addEventListener("click", function(){
+    document.getElementById("holOverlay").hidden = true;
+    renderApp();
+  });
+  document.getElementById("holYearSelect").addEventListener("change", function(e){
+    holYear = Number(e.target.value); renderHolidayModal();
+  });
+  document.getElementById("holidayList").addEventListener("click", function(e){
+    if (!currentUser || currentUser.role !== "admin") return;
+    var t = e.target.closest("[data-hol-toggle]");
+    if (t){
+      var date = t.getAttribute("data-hol-toggle");
+      var idx = state.disabledHolidays.indexOf(date);
+      if (idx === -1) state.disabledHolidays.push(date); else state.disabledHolidays.splice(idx,1);
+      persistState();
+      renderHolidayModal();
+      return;
+    }
+    var r = e.target.closest("[data-hol-remove]");
+    if (r){
+      var date2 = r.getAttribute("data-hol-remove");
+      state.customHolidays = state.customHolidays.filter(function(h){ return h.date !== date2; });
+      persistState();
+      renderHolidayModal();
+    }
+  });
+  document.getElementById("holAdd").addEventListener("click", function(){
+    if (!currentUser || currentUser.role !== "admin") return;
+    var date = document.getElementById("holNewDate").value;
+    var name = document.getElementById("holNewName").value.trim();
+    if (!date || !name){ alert("Completa la fecha y el nombre del feriado."); return; }
+    state.customHolidays.push({ date: date, nombre: name });
+    document.getElementById("holNewDate").value = "";
+    document.getElementById("holNewName").value = "";
+    holYear = Number(date.slice(0,4));
+    persistState();
+    renderHolidayModal();
+  });
+
+  // ---------- Import / Export (datos operativos, sin credenciales) ----------
+  function exportPayload(){
+    var centers = {};
+    if (currentUser.role === "admin"){
+      CENTERS.forEach(function(c){ centers[c.key] = state.centers[c.key]; });
+    } else {
+      centers[currentUser.centro] = state.centers[currentUser.centro];
+    }
+    return { centers: centers, customHolidays: state.customHolidays, disabledHolidays: state.disabledHolidays };
+  }
+  document.getElementById("btnExportJson").addEventListener("click", function(){
+    var blob = new Blob([JSON.stringify(exportPayload(), null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "vacaciones_" + activeCenterKey() + "_" + todayISO() + ".json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  document.getElementById("btnImportJson").addEventListener("click", function(){
+    document.getElementById("fileImport").click();
+  });
+  document.getElementById("fileImport").addEventListener("change", function(e){
+    var file = e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      try {
+        var raw = JSON.parse(ev.target.result);
+        var normalized = normalizeState(raw);
+        if (currentUser.role === "operator"){
+          state.centers[currentUser.centro] = normalized.centers[currentUser.centro];
+        } else {
+          CENTERS.forEach(function(c){
+            if (raw.centers && raw.centers[c.key]) state.centers[c.key] = normalized.centers[c.key];
+          });
+        }
+        if (raw.customHolidays) state.customHolidays = normalized.customHolidays;
+        if (raw.disabledHolidays) state.disabledHolidays = normalized.disabledHolidays;
+        onDataChanged();
+        alert("Datos importados correctamente.");
+      } catch (err){
+        alert("No se pudo leer el archivo: " + err.message);
+      }
+      document.getElementById("fileImport").value = "";
+    };
+    reader.readAsText(file);
+  });
+  document.getElementById("btnExportCsv").addEventListener("click", function(){
+    var header = ["Nombre","Cargo","Fecha ingreso","Antiguedad (meses)","Dias por año vigentes","Dias devengados","Dias usados","Saldo"];
+    var lines = [header.join(";")];
+    activeCenterEmployees().forEach(function(emp){
+      var s = employeeSummary(emp);
+      lines.push([
+        '"'+emp.nombre.replace(/"/g,'""')+'"',
+        '"'+(emp.cargo||"").replace(/"/g,'""')+'"',
+        emp.fechaIngreso,
+        s.acc.totalMonths,
+        s.acc.currentYearEntitlement,
+        fmt1(s.acc.accrued),
+        fmt1(s.usados),
+        fmt1(s.saldo)
+      ].join(";"));
+    });
+    var blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "reporte_vacaciones_" + activeCenterKey() + "_" + uiRefDate + ".csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  // ---------- Autenticación: configuración inicial ----------
+  document.getElementById("btnSetupSave").addEventListener("click", function(){
+    var user = document.getElementById("setupAdminUser").value.trim();
+    var pin = document.getElementById("setupAdminPin").value;
+    var pin2 = document.getElementById("setupAdminPin2").value;
+    var errEl = document.getElementById("setupError");
+    errEl.hidden = true;
+    if (!user || pin.length < 4){ errEl.textContent = "Ingresa un usuario y un PIN de al menos 4 caracteres."; errEl.hidden = false; return; }
+    if (pin !== pin2){ errEl.textContent = "El PIN y su confirmación no coinciden."; errEl.hidden = false; return; }
+    hashPin(pin).then(function(hash){
+      state.admin = { username: user, pinHash: hash };
+      currentUser = { role: "admin", username: user };
+      persistState();
+      renderApp();
+    });
+  });
+
+  // ---------- Autenticación: login ----------
+  document.getElementById("btnLogin").addEventListener("click", function(){ attemptLogin(); });
+  document.getElementById("loginPin").addEventListener("keydown", function(e){ if (e.key === "Enter") attemptLogin(); });
+  document.getElementById("loginUser").addEventListener("keydown", function(e){ if (e.key === "Enter") attemptLogin(); });
+  function attemptLogin(){
+    var user = document.getElementById("loginUser").value.trim();
+    var pin = document.getElementById("loginPin").value;
+    var errEl = document.getElementById("loginError");
+    errEl.hidden = true;
+    if (!user || !pin){ errEl.textContent = "Ingresa usuario y PIN."; errEl.hidden = false; return; }
+    hashPin(pin).then(function(hash){
+      if (state.admin && state.admin.username.toLowerCase() === user.toLowerCase() && state.admin.pinHash === hash){
+        currentUser = { role: "admin", username: state.admin.username };
+        uiAdminActiveCenter = CENTERS[0].key;
+        document.getElementById("loginUser").value = ""; document.getElementById("loginPin").value = "";
+        renderApp();
+        return;
+      }
+      var op = state.operators.filter(function(o){ return o.username.toLowerCase() === user.toLowerCase(); })[0];
+      if (op && op.pinHash === hash){
+        currentUser = { role: "operator", username: op.username, centro: op.centro };
+        document.getElementById("loginUser").value = ""; document.getElementById("loginPin").value = "";
+        renderApp();
+        return;
+      }
+      errEl.textContent = "Usuario o PIN incorrectos.";
+      errEl.hidden = false;
+    });
+  }
+  document.getElementById("btnLogout").addEventListener("click", function(){
+    currentUser = null;
+    uiSelectedEmployee = null;
+    renderApp();
+  });
+
+  // ---------- Cambiar mi PIN ----------
+  document.getElementById("btnMyPin").addEventListener("click", function(){
+    document.getElementById("myNewPin").value = "";
+    document.getElementById("myNewPin2").value = "";
+    document.getElementById("pinFormError").hidden = true;
+    document.getElementById("pinOverlay").hidden = false;
+  });
+  document.getElementById("pinFormCancel").addEventListener("click", function(){ document.getElementById("pinOverlay").hidden = true; });
+  document.getElementById("pinFormSave").addEventListener("click", function(){
+    var p1 = document.getElementById("myNewPin").value;
+    var p2 = document.getElementById("myNewPin2").value;
+    var errEl = document.getElementById("pinFormError");
+    if (p1.length < 4){ errEl.textContent = "El PIN debe tener al menos 4 caracteres."; errEl.hidden = false; return; }
+    if (p1 !== p2){ errEl.textContent = "Los PIN no coinciden."; errEl.hidden = false; return; }
+    hashPin(p1).then(function(hash){
+      if (currentUser.role === "admin"){
+        state.admin.pinHash = hash;
+      } else {
+        var op = state.operators.filter(function(o){ return o.centro === currentUser.centro; })[0];
+        if (op) op.pinHash = hash;
+      }
+      document.getElementById("pinOverlay").hidden = true;
+      onDataChanged();
+    });
+  });
+
+  // ---------- Gestión de operadores (admin) ----------
+  document.getElementById("btnManageOperators").addEventListener("click", function(){
+    if (!currentUser || currentUser.role !== "admin") return;
+    document.getElementById("operatorsOverlay").hidden = false;
+    renderOperatorsGrid();
+  });
+  document.getElementById("operatorsClose").addEventListener("click", function(){
+    document.getElementById("operatorsOverlay").hidden = true;
+    renderApp();
+  });
+  function renderOperatorsGrid(){
+    var host = document.getElementById("operatorsGrid");
+    host.innerHTML = CENTERS.map(function(c){
+      var op = getOperatorForCenter(c.key);
+      return '<div class="operator-card">'+
+        '<h4>'+escapeHtml(c.nombre)+'</h4>'+
+        '<div class="op-user">'+(op ? ("Usuario: <strong>"+escapeHtml(op.username)+"</strong>") : "Sin operador asignado")+'</div>'+
+        '<div class="op-actions">'+
+          '<button class="small ghost" data-op-action="edit" data-centro="'+c.key+'">'+(op?'Editar / Restablecer PIN':'Crear operador')+'</button>'+
+          (op ? '<button class="small ghost danger" data-op-action="remove" data-centro="'+c.key+'">Quitar acceso</button>' : '')+
+        '</div>'+
+      '</div>';
+    }).join("");
+  }
+  document.getElementById("operatorsGrid").addEventListener("click", function(e){
+    var btn = e.target.closest("[data-op-action]");
+    if (!btn) return;
+    var centro = btn.getAttribute("data-centro");
+    var action = btn.getAttribute("data-op-action");
+    if (action === "edit") openOperatorForm(centro);
+    else if (action === "remove"){
+      if (confirm("¿Quitar el acceso del operador de " + centerLabel(centro) + "?")){
+        state.operators = state.operators.filter(function(o){ return o.centro !== centro; });
+        persistState();
+        renderOperatorsGrid();
+      }
+    }
+  });
+  var operatorFormCentro = null;
+  function openOperatorForm(centro){
+    operatorFormCentro = centro;
+    var op = getOperatorForCenter(centro);
+    document.getElementById("operatorFormTitle").textContent = (op ? "Editar operador — " : "Nuevo operador — ") + centerLabel(centro);
+    document.getElementById("operatorCentroLabel").value = centerLabel(centro);
+    document.getElementById("operatorUser").value = op ? op.username : "";
+    document.getElementById("operatorPin").value = "";
+    document.getElementById("operatorPin2").value = "";
+    document.getElementById("operatorFormError").hidden = true;
+    document.getElementById("operatorFormOverlay").hidden = false;
+  }
+  document.getElementById("operatorFormCancel").addEventListener("click", function(){ document.getElementById("operatorFormOverlay").hidden = true; });
+  document.getElementById("operatorFormSave").addEventListener("click", function(){
+    var user = document.getElementById("operatorUser").value.trim();
+    var pin = document.getElementById("operatorPin").value;
+    var pin2 = document.getElementById("operatorPin2").value;
+    var errEl = document.getElementById("operatorFormError");
+    var existing = getOperatorForCenter(operatorFormCentro);
+    if (!user){ errEl.textContent = "Ingresa un usuario."; errEl.hidden = false; return; }
+    if (usernameTaken(user, operatorFormCentro)){ errEl.textContent = "Ese usuario ya está en uso por otra cuenta."; errEl.hidden = false; return; }
+    if (!existing && pin.length < 4){ errEl.textContent = "Ingresa un PIN de al menos 4 caracteres para el nuevo operador."; errEl.hidden = false; return; }
+    if (pin && pin.length < 4){ errEl.textContent = "El PIN debe tener al menos 4 caracteres."; errEl.hidden = false; return; }
+    if (pin !== pin2){ errEl.textContent = "Los PIN no coinciden."; errEl.hidden = false; return; }
+    var applyAndSave = function(hash){
+      if (existing){
+        existing.username = user;
+        if (hash) existing.pinHash = hash;
+      } else {
+        state.operators.push({ id: uid(), centro: operatorFormCentro, username: user, pinHash: hash });
+      }
+      document.getElementById("operatorFormOverlay").hidden = true;
+      persistState();
+      renderOperatorsGrid();
+    };
+    if (pin){ hashPin(pin).then(applyAndSave); } else { applyAndSave(null); }
+  });
+
+  // ---------- Centro tabs (admin) ----------
+  function renderCenterTabs(){
+    var host = document.getElementById("centerTabs");
+    if (!currentUser || currentUser.role !== "admin"){ host.hidden = true; return; }
+    host.hidden = false;
+    host.innerHTML = CENTERS.map(function(c){
+      return '<button class="center-tab'+(uiAdminActiveCenter===c.key?' active':'')+'" data-center="'+c.key+'">'+escapeHtml(c.nombre)+'</button>';
+    }).join("");
+  }
+  document.getElementById("centerTabs").addEventListener("click", function(e){
+    if (!currentUser || currentUser.role !== "admin") return;
+    var btn = e.target.closest("[data-center]");
+    if (!btn) return;
+    uiAdminActiveCenter = btn.getAttribute("data-center");
+    uiSelectedEmployee = null;
+    renderApp();
+  });
+
+  // ---------- Orquestación de pantallas ----------
+  function showScreen(id){
+    ["screenConnect","screenSetup","screenLogin","appContent"].forEach(function(s){
+      document.getElementById(s).hidden = (s !== id);
+    });
+  }
+  function renderApp(){
+    renderSyncBar();
+    if (!state.admin){
+      showScreen(backupDirHandle || !fsSupported() || skippedConnect ? "screenSetup" : "screenConnect");
+      return;
+    }
+    if (!currentUser){
+      showScreen("screenLogin");
+      return;
+    }
+    showScreen("appContent");
+    document.getElementById("whoUser").textContent = currentUser.username + (currentUser.role === "operator" ? (" · " + centerLabel(currentUser.centro)) : "");
+    document.getElementById("whoRole").textContent = currentUser.role === "admin" ? "Administrador" : "Operador";
+    document.getElementById("btnManageOperators").hidden = currentUser.role !== "admin";
+    document.getElementById("refDateInput").value = uiRefDate;
+    renderCenterTabs();
+    renderStats();
+    renderTable();
+  }
+
+  // ---------- Init ----------
+  function init(){
+    renderSyncBar();
+    var loadState = idbSupported() ? idbGet("appState").catch(function(){ return null; }) : Promise.resolve(null);
+    var loadDir = idbSupported() ? idbGet("backupDir").catch(function(){ return null; }) : Promise.resolve(null);
+    Promise.all([loadState, loadDir]).then(function(results){
+      var savedState = results[0], savedDir = results[1];
+      if (savedState) state = normalizeState(savedState);
+      if (savedDir && fsSupported()){
+        backupDirHandle = savedDir;
+        return backupDirHandle.queryPermission({ mode: "readwrite" }).then(function(perm){
+          if (perm === "granted"){
+            startPolling();
+            return pollRemote();
+          } else {
+            syncInfo = { state: "needs-permission", time: null, message: "" };
+          }
+        }).catch(function(){
+          syncInfo = { state: "needs-permission", time: null, message: "" };
+        });
+      }
+    }).catch(function(){}).then(function(){
+      renderApp();
+    });
+  }
+  init();
+})();
+</script>
+</body>
+</html>
