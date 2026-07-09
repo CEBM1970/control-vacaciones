@@ -1017,18 +1017,20 @@
     var end = addDays(new Date(Date.UTC(ingreso.getUTCFullYear() + n, ingreso.getUTCMonth(), ingreso.getUTCDate())), -1);
     return { inicio: toISO(start), fin: toISO(end) };
   }
-  function diasTomadosEnVentana(emp, ventana){
-    return emp.periodos.reduce(function(sum, p){
-      if (p.inicio >= ventana.inicio && p.inicio <= ventana.fin) return sum + countBusinessDays(p.inicio, p.fin);
-      return sum;
-    }, 0);
+  function totalDiasTomados(emp){
+    return emp.periodos.reduce(function(sum, p){ return sum + countBusinessDays(p.inicio, p.fin); }, 0);
   }
   function renderDetail(emp, s){
+    // Las vacaciones tomadas se descuentan siempre desde el año de antigüedad más antiguo
+    // hacia el más reciente (FIFO), sin importar la fecha real en que se tomaron, para que
+    // no queden periodos antiguos con saldo pendiente mientras haya consumo disponible.
+    var poolTomados = totalDiasTomados(emp);
     var yearsRows = "";
     for (var y = 1; y <= Math.max(s.acc.yearsCompleted, 1); y++){
       var ent = entitlementForYear(y, s.acc.threshold);
       var ventana = yearWindow(emp.fechaIngreso, y);
-      var tomadosVentana = diasTomadosEnVentana(emp, ventana);
+      var tomadosVentana = Math.min(Math.max(poolTomados, 0), ent);
+      poolTomados -= tomadosVentana;
       var pendienteVentana = ent - tomadosVentana;
       var pendClass = pendienteVentana <= 0 ? "good" : (pendienteVentana < ent ? "warning" : "critical");
       yearsRows += '<tr><td>Año '+y+'<div class="note" style="margin:2px 0 0;">'+fmtDate(ventana.inicio)+' → '+fmtDate(ventana.fin)+'</div></td>'+
@@ -1039,7 +1041,7 @@
       if (y > s.acc.yearsCompleted) break;
     }
     var ventanaActual = yearWindow(emp.fechaIngreso, s.acc.yearsCompleted+1);
-    var tomadosActual = diasTomadosEnVentana(emp, ventanaActual);
+    var tomadosActual = Math.max(poolTomados, 0);
     var devengadoActual = s.acc.monthsIntoCurrentYear*(s.acc.currentYearEntitlement/12);
     var priorNote = s.acc.priorYears > 0
       ? '<p class="note">Años reconocidos de empleadores anteriores: <strong>'+s.acc.priorYears+'</strong> (tope legal 10).'+
