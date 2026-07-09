@@ -1190,6 +1190,36 @@
         '</p>'
       : "";
     var canModifyDates = !!(currentUser && currentUser.role === "admin");
+    // Para cada periodo tomado, se determina a qué año(s) de devengo corresponden sus días,
+    // consumiendo los "cupos" de año en año (del más antiguo al más reciente) en el mismo orden
+    // cronológico (fecha de inicio) en que fueron tomados, igual que el cálculo de la tabla
+    // "Devengo por año". Si un periodo cruza el límite de un año, se listan todos los años que toca.
+    var periodoYearLabel = {};
+    (function(){
+      var ordered = emp.periodos.slice().sort(function(a,b){ return a.inicio < b.inicio ? -1 : (a.inicio > b.inicio ? 1 : 0); });
+      var year = 1;
+      var remainingInYear = entitlementForYear(1, s.acc.threshold);
+      var guard = 0;
+      ordered.forEach(function(p){
+        var remaining = countBusinessDays(p.inicio, p.fin);
+        var parts = [];
+        while (remaining > 0 && guard < 2000){
+          guard++;
+          if (remainingInYear <= 0){
+            year++;
+            remainingInYear = entitlementForYear(year, s.acc.threshold);
+            continue;
+          }
+          var take = Math.min(remaining, remainingInYear);
+          var ventana = yearWindow(emp.fechaIngreso, year);
+          var lbl = "Año " + year + " (" + fmtDate(ventana.inicio) + " → " + fmtDate(ventana.fin) + ")";
+          if (parts.indexOf(lbl) === -1) parts.push(lbl);
+          remaining -= take;
+          remainingInYear -= take;
+        }
+        periodoYearLabel[p.id] = parts.join(", ");
+      });
+    })();
     var periodosRows = emp.periodos.length
       ? emp.periodos.map(function(p){
           var dias = countBusinessDays(p.inicio, p.fin);
@@ -1205,6 +1235,7 @@
                    '</td></tr>';
           }
           return '<tr><td>'+fmtDate(p.inicio)+' → '+fmtDate(p.fin)+
+                   (periodoYearLabel[p.id] ? '<div class="note" style="margin:2px 0 0;">'+escapeHtml(periodoYearLabel[p.id])+'</div>' : '')+
                    (p.comprobanteFolio ? '<div class="note" style="margin:2px 0 0;">Comprobante N° '+escapeHtml(p.comprobanteFolio)+'</div>' : '')+
                  '</td><td class="num">'+dias+'</td><td>'+escapeHtml(p.nota||"")+'</td>'+
                  '<td style="white-space:nowrap;">'+
