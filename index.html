@@ -642,6 +642,7 @@
   var uiAdminActiveCenter = CENTERS[0].key;
   var uiSelectedEmployee = null;
   var uiEditingEmployeeId = null;
+  var uiEditingPeriodo = null;      // { empId, periodoId } - edición de fechas de un periodo (solo admin/superadmin)
   var uiRefDate = todayISO();       // parámetro local de vista, no se sincroniza
   var skippedConnect = false;       // el usuario eligió continuar sin conectar la carpeta compartida
 
@@ -1126,11 +1127,26 @@
           : ' Como ya cumple los 10 años base, suma 1 día cada 3 años trabajados con el empleador actual desde el ingreso mismo.')+
         '</p>'
       : "";
+    var canModifyDates = !!(currentUser && currentUser.role === "admin");
     var periodosRows = emp.periodos.length
       ? emp.periodos.map(function(p){
           var dias = countBusinessDays(p.inicio, p.fin);
+          if (canModifyDates && uiEditingPeriodo && uiEditingPeriodo.empId === emp.id && uiEditingPeriodo.periodoId === p.id){
+            return '<tr><td colspan="4">'+
+                     '<div class="form-row" style="margin:4px 0;">'+
+                       '<label class="field">Inicio<input type="date" id="editPeriodoInicio_'+p.id+'" value="'+p.inicio+'"></label>'+
+                       '<label class="field">Fin<input type="date" id="editPeriodoFin_'+p.id+'" value="'+p.fin+'"></label>'+
+                       '<label class="field" style="flex:1;">Nota<input type="text" id="editPeriodoNota_'+p.id+'" value="'+escapeHtml(p.nota||"")+'" placeholder="Opcional"></label>'+
+                       '<button class="primary small" data-action="save-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Guardar</button>'+
+                       '<button class="ghost small" data-action="cancel-edit-periodo">Cancelar</button>'+
+                     '</div>'+
+                   '</td></tr>';
+          }
           return '<tr><td>'+fmtDate(p.inicio)+' → '+fmtDate(p.fin)+'</td><td class="num">'+dias+'</td><td>'+escapeHtml(p.nota||"")+'</td>'+
-                 '<td><button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button></td></tr>';
+                 '<td style="white-space:nowrap;">'+
+                   (canModifyDates ? '<button class="small ghost" data-action="edit-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Editar</button> ' : '')+
+                   '<button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button>'+
+                 '</td></tr>';
         }).join("")
       : '<tr><td colspan="4" class="note">Sin periodos registrados.</td></tr>';
 
@@ -1199,6 +1215,35 @@
         var perId = actionBtn.getAttribute("data-periodo");
         var emp3 = employees.filter(function(x){ return x.id === empId2; })[0];
         emp3.periodos = emp3.periodos.filter(function(p){ return p.id !== perId; });
+        if (uiEditingPeriodo && uiEditingPeriodo.periodoId === perId) uiEditingPeriodo = null;
+        onDataChanged();
+        return;
+      }
+      if (action === "edit-periodo"){
+        // Modificar las fechas/nota de un periodo ya registrado: solo administradores y super administradores.
+        if (!currentUser || currentUser.role !== "admin") return;
+        uiEditingPeriodo = { empId: actionBtn.getAttribute("data-emp"), periodoId: actionBtn.getAttribute("data-periodo") };
+        renderApp();
+        return;
+      }
+      if (action === "cancel-edit-periodo"){
+        uiEditingPeriodo = null;
+        renderApp();
+        return;
+      }
+      if (action === "save-periodo"){
+        if (!currentUser || currentUser.role !== "admin") return;
+        var empId4 = actionBtn.getAttribute("data-emp");
+        var perId4 = actionBtn.getAttribute("data-periodo");
+        var inicio4 = document.getElementById("editPeriodoInicio_"+perId4).value;
+        var fin4 = document.getElementById("editPeriodoFin_"+perId4).value;
+        var nota4 = document.getElementById("editPeriodoNota_"+perId4).value;
+        if (!inicio4 || !fin4){ alert("Selecciona fecha de inicio y fin."); return; }
+        if (parseISO(fin4) < parseISO(inicio4)){ alert("La fecha de fin no puede ser anterior a la de inicio."); return; }
+        var emp4 = employees.filter(function(x){ return x.id === empId4; })[0];
+        var per4 = emp4 ? emp4.periodos.filter(function(p){ return p.id === perId4; })[0] : null;
+        if (per4){ per4.inicio = inicio4; per4.fin = fin4; per4.nota = nota4; }
+        uiEditingPeriodo = null;
         onDataChanged();
         return;
       }
@@ -1207,6 +1252,7 @@
     if (row){
       var rid = row.getAttribute("data-id");
       uiSelectedEmployee = (uiSelectedEmployee === rid) ? null : rid;
+      uiEditingPeriodo = null;
       renderApp();
     }
   });
@@ -1484,6 +1530,7 @@
   document.getElementById("btnLogout").addEventListener("click", function(){
     currentUser = null;
     uiSelectedEmployee = null;
+    uiEditingPeriodo = null;
     renderApp();
   });
 
