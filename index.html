@@ -487,6 +487,9 @@
         <input type="checkbox" id="operatorSuperadmin" style="width:auto;">
         <span>Super administrador (puede gestionar otros administradores)</span>
       </label>
+      <label class="field" id="operatorEmailField" hidden>Correo (para avisos de vacaciones registradas)
+        <input type="email" id="operatorEmail" placeholder="Ej: admin@preserva.cl">
+      </label>
     </div>
     <div class="auth-error" id="operatorFormError" hidden></div>
     <div class="actions">
@@ -1177,6 +1180,37 @@
     );
   }
 
+  // ---------- Aviso por correo al registrar vacaciones (operadores) ----------
+  function notifyAdminsOfNuevoPeriodo(emp, periodo, centroKey){
+    var dias = countBusinessDays(periodo.inicio, periodo.fin);
+    var destinatarios = state.admins
+      .map(function(a){ return (a.email || "").trim(); })
+      .filter(function(e){ return e; });
+    var asunto = "Nuevo registro de vacaciones: " + emp.nombre + " (" + centerLabel(centroKey) + ")";
+    var cuerpoLineas = [
+      "Se registró un nuevo periodo de vacaciones tomadas:",
+      "",
+      "Colaborador: " + emp.nombre + (emp.rut ? " (" + emp.rut + ")" : ""),
+      "Centro: " + centerLabel(centroKey),
+      "Periodo: " + fmtDate(periodo.inicio) + " → " + fmtDate(periodo.fin) + " (" + dias + " días hábiles)",
+      periodo.nota ? "Nota: " + periodo.nota : null,
+      "Registrado por: " + (currentUser ? currentUser.username : "-"),
+      "Fecha de registro: " + fmtDate(todayISO())
+    ].filter(function(l){ return l !== null; });
+    var cuerpo = cuerpoLineas.join("\n");
+    if (destinatarios.length === 0){
+      alert('El periodo se registró correctamente.\n\nPara enviar un aviso por correo al administrador, primero configúrale un correo en "Gestionar operadores" → Administradores → Editar.');
+      return;
+    }
+    var mailtoUrl = "mailto:" + destinatarios.join(",") + "?subject=" + encodeURIComponent(asunto) + "&body=" + encodeURIComponent(cuerpo);
+    var a = document.createElement("a");
+    a.href = mailtoUrl;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
   document.getElementById("tableHost").addEventListener("click", function(e){
     var actionBtn = e.target.closest("[data-action]");
     if (actionBtn){
@@ -1206,8 +1240,12 @@
         if (!inicio || !fin){ alert("Selecciona fecha de inicio y fin."); return; }
         if (parseISO(fin) < parseISO(inicio)){ alert("La fecha de fin no puede ser anterior a la de inicio."); return; }
         var emp2 = employees.filter(function(x){ return x.id === empId; })[0];
-        emp2.periodos.push({ id: uid(), inicio: inicio, fin: fin, nota: nota });
+        var nuevoPeriodo = { id: uid(), inicio: inicio, fin: fin, nota: nota };
+        emp2.periodos.push(nuevoPeriodo);
         onDataChanged();
+        if (currentUser && currentUser.role === "operator"){
+          notifyAdminsOfNuevoPeriodo(emp2, nuevoPeriodo, activeCenterKey());
+        }
         return;
       }
       if (action === "del-periodo"){
@@ -1579,7 +1617,9 @@
     var host = document.getElementById("adminsGrid");
     var rows = state.admins.map(function(a){
       return '<div class="operator-row">'+
-        '<span class="op-row-user">'+escapeHtml(a.username)+(a.superadmin?' <span class="badge good" style="margin-left:4px;">super admin</span>':'')+'</span>'+
+        '<span class="op-row-user">'+escapeHtml(a.username)+(a.superadmin?' <span class="badge good" style="margin-left:4px;">super admin</span>':'')+
+          (a.email ? '<div class="note" style="margin:2px 0 0;font-weight:400;">'+escapeHtml(a.email)+'</div>' : '<div class="note" style="margin:2px 0 0;font-weight:400;">Sin correo configurado</div>')+
+        '</span>'+
         '<span class="op-row-actions">'+
           '<button class="small ghost" data-admin-action="edit" data-admin-id="'+a.id+'">Editar</button>'+
           '<button class="small ghost danger" data-admin-action="remove" data-admin-id="'+a.id+'">Quitar</button>'+
@@ -1673,6 +1713,7 @@
     var existing = isAdmin ? (id ? getAdminById(id) : null) : (id ? getOperatorById(id) : null);
     document.getElementById("operatorCentroField").hidden = isAdmin;
     document.getElementById("operatorSuperField").hidden = !isAdmin;
+    document.getElementById("operatorEmailField").hidden = !isAdmin;
     document.getElementById("operatorFormTitle").textContent = isAdmin
       ? (existing ? "Editar administrador" : "Nuevo administrador")
       : (existing ? "Editar operador — " : "Nuevo operador — ") + centerLabel(centro);
@@ -1681,6 +1722,7 @@
     document.getElementById("operatorPin").value = "";
     document.getElementById("operatorPin2").value = "";
     document.getElementById("operatorSuperadmin").checked = isAdmin && existing ? !!existing.superadmin : false;
+    document.getElementById("operatorEmail").value = isAdmin && existing ? (existing.email || "") : "";
     document.getElementById("operatorFormError").hidden = true;
     document.getElementById("operatorFormOverlay").hidden = false;
   }
@@ -1704,14 +1746,19 @@
         state.admins.filter(function(a){ return a.superadmin; }).length <= 1){
       errEl.textContent = "No puedes quitarle el rol de super administrador al único que queda."; errEl.hidden = false; return;
     }
+    var email = isAdmin ? document.getElementById("operatorEmail").value.trim() : "";
+    if (isAdmin && email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+      errEl.textContent = "El correo ingresado no parece válido."; errEl.hidden = false; return;
+    }
     var applyAndSave = function(hash){
       if (isAdmin){
         if (existing){
           existing.username = user;
           existing.superadmin = document.getElementById("operatorSuperadmin").checked;
+          existing.email = email;
           if (hash) existing.pinHash = hash;
         } else {
-          state.admins.push({ id: uid(), username: user, pinHash: hash, superadmin: document.getElementById("operatorSuperadmin").checked });
+          state.admins.push({ id: uid(), username: user, pinHash: hash, superadmin: document.getElementById("operatorSuperadmin").checked, email: email });
         }
       } else {
         if (existing){
