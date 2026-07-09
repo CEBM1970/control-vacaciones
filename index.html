@@ -117,6 +117,7 @@
   button[data-action="delete"]::before, button[data-action="del-periodo"]::before,
   button[data-admin-action="remove"]::before, button[data-op-action="remove"]::before { content: "✕"; font-size:11px; }
   button[data-action="add-periodo"]::before { content: "+"; font-weight:700; }
+  button[data-action="emit-comprobante"]::before { content: "⎙"; }
 
   input, select {
     font: inherit; font-size: 13.5px; padding: 8px 11px; border-radius: var(--radius-sm);
@@ -647,7 +648,7 @@
   // ---------- Estado compartido (sincronizado) ----------
   function defaultState(){
     var centers = {};
-    CENTERS.forEach(function(c){ centers[c.key] = { nombre: c.nombre, employees: [] }; });
+    CENTERS.forEach(function(c){ centers[c.key] = { nombre: c.nombre, employees: [], nextComprobanteFolio: 1 }; });
     return {
       updatedAt: null,
       admins: [],
@@ -664,7 +665,11 @@
     var centers = {};
     CENTERS.forEach(function(c){
       var existing = raw.centers && raw.centers[c.key];
-      centers[c.key] = { nombre: c.nombre, employees: (existing && Array.isArray(existing.employees)) ? existing.employees : [] };
+      centers[c.key] = {
+        nombre: c.nombre,
+        employees: (existing && Array.isArray(existing.employees)) ? existing.employees : [],
+        nextComprobanteFolio: (existing && typeof existing.nextComprobanteFolio === "number") ? existing.nextComprobanteFolio : 1
+      };
     });
     var admins;
     if (Array.isArray(raw.admins)){
@@ -1199,8 +1204,11 @@
                      '</div>'+
                    '</td></tr>';
           }
-          return '<tr><td>'+fmtDate(p.inicio)+' → '+fmtDate(p.fin)+'</td><td class="num">'+dias+'</td><td>'+escapeHtml(p.nota||"")+'</td>'+
+          return '<tr><td>'+fmtDate(p.inicio)+' → '+fmtDate(p.fin)+
+                   (p.comprobanteFolio ? '<div class="note" style="margin:2px 0 0;">Comprobante N° '+escapeHtml(p.comprobanteFolio)+'</div>' : '')+
+                 '</td><td class="num">'+dias+'</td><td>'+escapeHtml(p.nota||"")+'</td>'+
                  '<td style="white-space:nowrap;">'+
+                   '<button class="small ghost" data-action="emit-comprobante" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Comprobante</button> '+
                    (canModifyDates ? '<button class="small ghost" data-action="edit-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Editar</button> ' : '')+
                    '<button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button>'+
                  '</td></tr>';
@@ -1355,6 +1363,85 @@
     onDone();
   }
 
+  // ---------- Comprobante de vacaciones (folio correlativo + documento imprimible) ----------
+  function centerFolioPrefix(centerKey){
+    var map = { administracion: "ADM", talca: "TAL", los_angeles: "LAG", aserradero: "ASE" };
+    return map[centerKey] || "GEN";
+  }
+  // Asigna folio de forma idempotente: si el periodo ya tiene comprobanteFolio, no vuelve a
+  // consumir el correlativo (permite re-emitir el mismo comprobante sin duplicar folios).
+  function assignComprobanteFolio(emp, periodo, centroKey){
+    if (!periodo.comprobanteFolio){
+      var center = state.centers[centroKey];
+      var n = (typeof center.nextComprobanteFolio === "number") ? center.nextComprobanteFolio : 1;
+      periodo.comprobanteFolio = centerFolioPrefix(centroKey) + "-" + String(n).padStart(4, "0");
+      periodo.comprobanteEmitidoEn = new Date().toISOString();
+      center.nextComprobanteFolio = n + 1;
+      onDataChanged();
+    }
+    return periodo.comprobanteFolio;
+  }
+  function abrirComprobante(emp, periodo, centroKey){
+    var folio = assignComprobanteFolio(emp, periodo, centroKey);
+    var dias = countBusinessDays(periodo.inicio, periodo.fin);
+    var win = window.open("", "_blank");
+    if (!win){
+      alert("El comprobante fue generado (folio " + folio + ") pero el navegador bloqueó la ventana emergente. Habilita las ventanas emergentes para este sitio e intenta nuevamente con el botón \"Comprobante\".");
+      return;
+    }
+    var emitidoStr = fmtDate(todayISO());
+    var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'+
+      '<title>Comprobante de Vacaciones - '+escapeHtml(folio)+'</title>'+
+      '<style>'+
+        'body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;max-width:760px;margin:32px auto;padding:0 24px;}'+
+        '.header{display:flex;align-items:center;gap:16px;border-bottom:3px solid #1a5c3a;padding-bottom:16px;margin-bottom:24px;}'+
+        '.header img{height:56px;width:auto;}'+
+        '.header h1{font-size:18px;margin:0;color:#1a5c3a;}'+
+        '.header p{margin:2px 0 0;font-size:12.5px;color:#555;}'+
+        'h2{font-size:16px;margin:0 0 4px;}'+
+        '.folio{font-size:13px;color:#555;margin:0 0 20px;}'+
+        'table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;}'+
+        'td,th{border:1px solid #ccc;padding:8px 10px;text-align:left;}'+
+        'th{background:#f2f6f4;width:220px;}'+
+        '.legal{font-size:12.5px;color:#333;line-height:1.5;margin-top:24px;}'+
+        '.firmas{display:flex;justify-content:space-between;margin-top:70px;}'+
+        '.firma{width:42%;text-align:center;border-top:1px solid #444;padding-top:6px;font-size:12.5px;}'+
+        '.footer{margin-top:36px;font-size:11px;color:#888;text-align:center;}'+
+        '.no-print{margin:24px 0;text-align:center;}'+
+        '.no-print button{font:inherit;font-size:14px;padding:10px 20px;border-radius:8px;border:1px solid #1a5c3a;background:#1a5c3a;color:#fff;cursor:pointer;}'+
+        '@media print{.no-print{display:none;}body{margin:0;padding:0 12px;}}'+
+      '</style></head><body>'+
+      '<div class="header">'+
+        '<img src="logo.png" alt="Preserva" onerror="this.style.display=\'none\'">'+
+        '<div><h1>Preserva Ltda</h1><p>Control de Vacaciones del Personal</p></div>'+
+      '</div>'+
+      '<h2>Comprobante de Vacaciones</h2>'+
+      '<p class="folio">Folio N° '+escapeHtml(folio)+' &nbsp;·&nbsp; Emitido el '+emitidoStr+'</p>'+
+      '<table>'+
+        '<tr><th>Colaborador</th><td>'+escapeHtml(emp.nombre)+'</td></tr>'+
+        (emp.rut ? '<tr><th>RUT</th><td>'+escapeHtml(emp.rut)+'</td></tr>' : '')+
+        (emp.cargo ? '<tr><th>Cargo</th><td>'+escapeHtml(emp.cargo)+'</td></tr>' : '')+
+        '<tr><th>Centro</th><td>'+escapeHtml(centerLabel(centroKey))+'</td></tr>'+
+        '<tr><th>Periodo de vacaciones</th><td>'+fmtDate(periodo.inicio)+' → '+fmtDate(periodo.fin)+' ('+dias+' días hábiles)</td></tr>'+
+        (periodo.nota ? '<tr><th>Nota</th><td>'+escapeHtml(periodo.nota)+'</td></tr>' : '')+
+      '</table>'+
+      '<p class="legal">Se deja constancia, para los efectos del artículo 67° del Código del Trabajo, que el/la '+
+        'trabajador(a) individualizado(a) hace uso del feriado anual (vacaciones) indicado precedentemente, '+
+        'periodo durante el cual no prestará servicios para la empresa, sin perjuicio de la remuneración íntegra '+
+        'que le corresponde percibir conforme a la ley.</p>'+
+      '<div class="firmas">'+
+        '<div class="firma">Firma trabajador(a)</div>'+
+        '<div class="firma">Firma empleador / representante</div>'+
+      '</div>'+
+      '<div class="no-print"><button onclick="window.print()">Imprimir / Guardar como PDF</button></div>'+
+      '<div class="footer">Preserva Ltda — Comprobante generado automáticamente por el sistema de Control de Vacaciones.</div>'+
+      '<script>window.onload = function(){ setTimeout(function(){ window.print(); }, 200); };<\/script>'+
+      '</body></html>';
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+  }
+
   document.getElementById("tableHost").addEventListener("click", function(e){
     var actionBtn = e.target.closest("[data-action]");
     if (actionBtn){
@@ -1387,9 +1474,11 @@
         var nuevoPeriodo = { id: uid(), inicio: inicio, fin: fin, nota: nota };
         emp2.periodos.push(nuevoPeriodo);
         onDataChanged();
+        var centroKeyNuevo = activeCenterKey();
         if (currentUser && currentUser.role === "operator"){
-          notifyAdminsOfNuevoPeriodo(emp2, nuevoPeriodo, activeCenterKey());
+          notifyAdminsOfNuevoPeriodo(emp2, nuevoPeriodo, centroKeyNuevo);
         }
+        abrirComprobante(emp2, nuevoPeriodo, centroKeyNuevo);
         return;
       }
       if (action === "del-periodo"){
@@ -1399,6 +1488,16 @@
         emp3.periodos = emp3.periodos.filter(function(p){ return p.id !== perId; });
         if (uiEditingPeriodo && uiEditingPeriodo.periodoId === perId) uiEditingPeriodo = null;
         onDataChanged();
+        return;
+      }
+      if (action === "emit-comprobante"){
+        // Disponible para administradores y operadores por igual: re-emite (o emite por
+        // primera vez) el comprobante, reutilizando el mismo folio si ya fue asignado.
+        var empIdC = actionBtn.getAttribute("data-emp");
+        var perIdC = actionBtn.getAttribute("data-periodo");
+        var empC = employees.filter(function(x){ return x.id === empIdC; })[0];
+        var perC = empC ? empC.periodos.filter(function(p){ return p.id === perIdC; })[0] : null;
+        if (empC && perC) abrirComprobante(empC, perC, activeCenterKey());
         return;
       }
       if (action === "edit-periodo"){
