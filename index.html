@@ -189,6 +189,7 @@
     background: var(--surface-1); border-radius: var(--radius-lg); width: 100%; max-width: 440px;
     padding: 22px 24px; border:1px solid var(--border); box-shadow: var(--shadow-lg);
     animation: modalIn .16s ease-out;
+    max-height: 88vh; overflow-y: auto;
   }
   @keyframes modalIn { from { opacity:0; transform: translateY(6px) scale(.98); } to { opacity:1; transform: translateY(0) scale(1); } }
   .modal h2 { font-size:16.5px; margin: 0 0 14px; font-weight:700; }
@@ -460,6 +461,23 @@
     </div>
     <p class="note" style="margin:0 0 14px;">Operadores por centro: cada centro de negocio solo puede ser accedido por sus operadores autorizados. Crea, edita o quita el acceso.</p>
     <div class="operators-grid" id="operatorsGrid"></div>
+    <div id="webhookSection" style="margin-top:22px;padding-top:16px;border-top:1px solid var(--gridline);">
+      <h3 style="font-size:13px;margin:0 0 8px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.03em;">Aviso automático por correo (Google Apps Script)</h3>
+      <p class="note" style="margin:0 0 10px;">Envía el aviso de vacaciones registradas automáticamente a los administradores, sin depender del programa de correo del operador. Requiere configurar un pequeño script en tu cuenta de Google (te guío aparte).</p>
+      <div class="form-row">
+        <label class="field" style="flex:1;min-width:260px;">URL del script (Web App)
+          <input type="text" id="webhookUrl" placeholder="https://script.google.com/macros/s/AKfycb.../exec">
+        </label>
+        <label class="field" style="flex:1;min-width:180px;">Clave secreta
+          <input type="text" id="webhookSecret" placeholder="Una clave que tú definas">
+        </label>
+      </div>
+      <div class="auth-error" id="webhookTestResult" hidden></div>
+      <div class="actions" style="justify-content:flex-start;margin-top:6px;">
+        <button class="ghost small" id="webhookSave">Guardar</button>
+        <button class="ghost small" id="webhookTest">Enviar prueba</button>
+      </div>
+    </div>
     <div class="actions" style="margin-top:16px;">
       <button class="ghost" id="operatorsClose">Cerrar</button>
     </div>
@@ -519,25 +537,28 @@
   </div>
 </div>
 
-<!-- Modal: aviso de vacaciones registradas (abrir correo o copiar manualmente) -->
+<!-- Modal: aviso de vacaciones registradas (envío automático, o abrir correo/copiar manualmente) -->
 <div class="overlay" id="periodoNotifyOverlay" hidden>
   <div class="modal" style="max-width:540px;">
     <h2>Aviso para el administrador</h2>
-    <p class="note" style="margin:0 0 12px;">El periodo se guardó correctamente. Puedes intentar abrir tu programa de correo, o copiar
-      este mensaje y enviarlo tú mismo (por correo web, WhatsApp, etc.) si tu computador no tiene un cliente de correo configurado.</p>
-    <div class="form-col">
-      <label class="field">Para
-        <input type="text" id="periodoNotifyTo" disabled>
-      </label>
-      <label class="field">Asunto
-        <input type="text" id="periodoNotifySubject" disabled>
-      </label>
-      <label class="field">Mensaje
-        <textarea id="periodoNotifyBody" rows="8" readonly
-          style="font:inherit;font-size:13.5px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-primary);resize:vertical;"></textarea>
-      </label>
+    <p class="note" id="periodoNotifyStatus" style="margin:0 0 12px;">El periodo se guardó correctamente.</p>
+    <div id="periodoNotifyManualSection">
+      <p class="note" style="margin:0 0 12px;">Puedes intentar abrir tu programa de correo, o copiar
+        este mensaje y enviarlo tú mismo (por correo web, WhatsApp, etc.) si tu computador no tiene un cliente de correo configurado.</p>
+      <div class="form-col">
+        <label class="field">Para
+          <input type="text" id="periodoNotifyTo" disabled>
+        </label>
+        <label class="field">Asunto
+          <input type="text" id="periodoNotifySubject" disabled>
+        </label>
+        <label class="field">Mensaje
+          <textarea id="periodoNotifyBody" rows="8" readonly
+            style="font:inherit;font-size:13.5px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-primary);resize:vertical;"></textarea>
+        </label>
+      </div>
+      <p class="note" id="periodoNotifyCopied" hidden style="color:var(--good);font-weight:600;">Mensaje copiado al portapapeles.</p>
     </div>
-    <p class="note" id="periodoNotifyCopied" hidden style="color:var(--good);font-weight:600;">Mensaje copiado al portapapeles.</p>
     <div class="actions">
       <button class="ghost" id="periodoNotifyClose">Cerrar</button>
       <button class="ghost" id="periodoNotifyCopy">Copiar mensaje</button>
@@ -633,7 +654,8 @@
       operators: [],
       centers: centers,
       customHolidays: [],
-      disabledHolidays: []
+      disabledHolidays: [],
+      settings: { notifyWebhookUrl: "", notifyWebhookSecret: "" }
     };
   }
   function normalizeState(raw){
@@ -663,7 +685,11 @@
       }) : [],
       centers: centers,
       customHolidays: Array.isArray(raw.customHolidays) ? raw.customHolidays : [],
-      disabledHolidays: Array.isArray(raw.disabledHolidays) ? raw.disabledHolidays : []
+      disabledHolidays: Array.isArray(raw.disabledHolidays) ? raw.disabledHolidays : [],
+      settings: {
+        notifyWebhookUrl: (raw.settings && raw.settings.notifyWebhookUrl) || "",
+        notifyWebhookSecret: (raw.settings && raw.settings.notifyWebhookSecret) || ""
+      }
     };
   }
 
@@ -770,6 +796,7 @@
       mergedBase.operators = state.operators;
       mergedBase.customHolidays = state.customHolidays;
       mergedBase.disabledHolidays = state.disabledHolidays;
+      mergedBase.settings = state.settings;
     } else {
       // Sin sesión (asistente de configuración inicial): usar el estado local completo.
       return normalizeState(state);
@@ -1209,6 +1236,32 @@
 
   // ---------- Aviso por correo al registrar vacaciones (operadores) ----------
   var pendingNotifyMailto = null;
+
+  // Llama al Google Apps Script (Web App) configurado por el super administrador.
+  // Se usa Content-Type "text/plain" a propósito: evita el preflight CORS que los
+  // Web Apps de Apps Script no manejan bien, aunque el contenido siga siendo JSON.
+  function sendViaWebhook(url, payload){
+    var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    var timeoutId = controller ? setTimeout(function(){ controller.abort(); }, 10000) : null;
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      signal: controller ? controller.signal : undefined
+    }).then(function(res){
+      if (timeoutId) clearTimeout(timeoutId);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json().catch(function(){ return {}; });
+    }).then(function(data){
+      if (data && data.ok === false) throw new Error(data.error || "el script reportó un error");
+      return data;
+    }).catch(function(err){
+      if (timeoutId) clearTimeout(timeoutId);
+      if (err && err.name === "AbortError") throw new Error("tiempo de espera agotado");
+      throw err;
+    });
+  }
+
   function notifyAdminsOfNuevoPeriodo(emp, periodo, centroKey){
     var dias = countBusinessDays(periodo.inicio, periodo.fin);
     var destinatarios = state.admins
@@ -1235,7 +1288,35 @@
     document.getElementById("periodoNotifySubject").value = asunto;
     document.getElementById("periodoNotifyBody").value = cuerpo;
     document.getElementById("periodoNotifyCopied").hidden = true;
+
+    var statusEl = document.getElementById("periodoNotifyStatus");
+    var manualSection = document.getElementById("periodoNotifyManualSection");
+    var webhookUrl = ((state.settings && state.settings.notifyWebhookUrl) || "").trim();
+
     document.getElementById("periodoNotifyOverlay").hidden = false;
+
+    if (webhookUrl){
+      statusEl.style.color = "";
+      statusEl.textContent = "Enviando aviso automáticamente...";
+      manualSection.hidden = true;
+      sendViaWebhook(webhookUrl, {
+        secret: (state.settings && state.settings.notifyWebhookSecret) || "",
+        to: destinatarios.join(","),
+        subject: asunto,
+        body: cuerpo
+      }).then(function(){
+        statusEl.style.color = "var(--good)";
+        statusEl.textContent = "✓ Aviso enviado automáticamente a: " + destinatarios.join(", ");
+      }).catch(function(err){
+        statusEl.style.color = "";
+        statusEl.textContent = "No se pudo enviar el aviso automáticamente (" + (err && err.message ? err.message : "error de conexión") + "). Puedes usar las opciones de abajo.";
+        manualSection.hidden = false;
+      });
+    } else {
+      statusEl.style.color = "";
+      statusEl.textContent = "El periodo se guardó correctamente.";
+      manualSection.hidden = false;
+    }
   }
   document.getElementById("periodoNotifyClose").addEventListener("click", function(){
     document.getElementById("periodoNotifyOverlay").hidden = true;
@@ -1667,10 +1748,61 @@
     if (!currentUser || currentUser.role !== "admin") return;
     document.getElementById("operatorsOverlay").hidden = false;
     renderOperatorsGrid();
+    renderWebhookSection();
   });
   document.getElementById("operatorsClose").addEventListener("click", function(){
     document.getElementById("operatorsOverlay").hidden = true;
     renderApp();
+  });
+  function renderWebhookSection(){
+    var section = document.getElementById("webhookSection");
+    var isSuper = !!(currentUser && currentUser.superadmin);
+    section.hidden = !isSuper;
+    if (!isSuper) return;
+    document.getElementById("webhookUrl").value = (state.settings && state.settings.notifyWebhookUrl) || "";
+    document.getElementById("webhookSecret").value = (state.settings && state.settings.notifyWebhookSecret) || "";
+    document.getElementById("webhookTestResult").hidden = true;
+  }
+  document.getElementById("webhookSave").addEventListener("click", function(){
+    if (!currentUser || !currentUser.superadmin) return;
+    state.settings = state.settings || { notifyWebhookUrl: "", notifyWebhookSecret: "" };
+    state.settings.notifyWebhookUrl = document.getElementById("webhookUrl").value.trim();
+    state.settings.notifyWebhookSecret = document.getElementById("webhookSecret").value.trim();
+    persistState();
+    var resEl = document.getElementById("webhookTestResult");
+    resEl.style.color = "var(--good)";
+    resEl.textContent = "Configuración guardada.";
+    resEl.hidden = false;
+  });
+  document.getElementById("webhookTest").addEventListener("click", function(){
+    if (!currentUser || !currentUser.superadmin) return;
+    var url = document.getElementById("webhookUrl").value.trim();
+    var secret = document.getElementById("webhookSecret").value.trim();
+    var resEl = document.getElementById("webhookTestResult");
+    var me = getAdminById(currentUser.id);
+    var myEmail = me ? (me.email || "").trim() : "";
+    if (!url){ resEl.style.color = "var(--critical)"; resEl.textContent = "Ingresa primero la URL del script."; resEl.hidden = false; return; }
+    if (!myEmail){
+      resEl.style.color = "var(--critical)";
+      resEl.textContent = "Configura primero tu propio correo (Editar tu cuenta de administrador) para poder probar el envío.";
+      resEl.hidden = false;
+      return;
+    }
+    resEl.style.color = "";
+    resEl.textContent = "Enviando prueba...";
+    resEl.hidden = false;
+    sendViaWebhook(url, {
+      secret: secret,
+      to: myEmail,
+      subject: "Prueba de configuración - Control de Vacaciones",
+      body: "Esto es un correo de prueba enviado desde la app de Control de Vacaciones para confirmar que la configuración del aviso automático funciona correctamente."
+    }).then(function(){
+      resEl.style.color = "var(--good)";
+      resEl.textContent = "Prueba enviada correctamente a " + myEmail + ". Revisa la bandeja de entrada.";
+    }).catch(function(err){
+      resEl.style.color = "var(--critical)";
+      resEl.textContent = "Error al enviar la prueba: " + (err && err.message ? err.message : "desconocido");
+    });
   });
   function renderAdminsGrid(){
     var section = document.getElementById("adminsSection");
