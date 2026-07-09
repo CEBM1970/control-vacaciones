@@ -1159,6 +1159,39 @@
   function totalDiasTomados(emp){
     return emp.periodos.reduce(function(sum, p){ return sum + countBusinessDays(p.inicio, p.fin); }, 0);
   }
+  // Para cada periodo tomado, determina a qué año(s) de devengo corresponden sus días,
+  // consumiendo los "cupos" de año en año (del más antiguo al más reciente) en el mismo orden
+  // cronológico (fecha de inicio) en que fueron tomados, igual que el cálculo de la tabla
+  // "Devengo por año". Si un periodo cruza el límite de un año, se listan todos los años que toca.
+  // Se reutiliza tanto en el detalle en pantalla como en el comprobante imprimible.
+  function computePeriodoYearLabels(emp){
+    var acc = computeAccrual(emp.fechaIngreso, uiRefDate, emp.aniosServiciosAnteriores);
+    var labels = {};
+    var ordered = emp.periodos.slice().sort(function(a,b){ return a.inicio < b.inicio ? -1 : (a.inicio > b.inicio ? 1 : 0); });
+    var year = 1;
+    var remainingInYear = entitlementForYear(1, acc.threshold);
+    var guard = 0;
+    ordered.forEach(function(p){
+      var remaining = countBusinessDays(p.inicio, p.fin);
+      var parts = [];
+      while (remaining > 0 && guard < 2000){
+        guard++;
+        if (remainingInYear <= 0){
+          year++;
+          remainingInYear = entitlementForYear(year, acc.threshold);
+          continue;
+        }
+        var take = Math.min(remaining, remainingInYear);
+        var ventana = yearWindow(emp.fechaIngreso, year);
+        var lbl = "Año " + year + " (" + fmtDate(ventana.inicio) + " → " + fmtDate(ventana.fin) + ")";
+        if (parts.indexOf(lbl) === -1) parts.push(lbl);
+        remaining -= take;
+        remainingInYear -= take;
+      }
+      labels[p.id] = parts.join(", ");
+    });
+    return labels;
+  }
   function renderDetail(emp, s){
     // Las vacaciones tomadas se descuentan siempre desde el año de antigüedad más antiguo
     // hacia el más reciente (FIFO), sin importar la fecha real en que se tomaron, para que
@@ -1190,36 +1223,7 @@
         '</p>'
       : "";
     var canModifyDates = !!(currentUser && currentUser.role === "admin");
-    // Para cada periodo tomado, se determina a qué año(s) de devengo corresponden sus días,
-    // consumiendo los "cupos" de año en año (del más antiguo al más reciente) en el mismo orden
-    // cronológico (fecha de inicio) en que fueron tomados, igual que el cálculo de la tabla
-    // "Devengo por año". Si un periodo cruza el límite de un año, se listan todos los años que toca.
-    var periodoYearLabel = {};
-    (function(){
-      var ordered = emp.periodos.slice().sort(function(a,b){ return a.inicio < b.inicio ? -1 : (a.inicio > b.inicio ? 1 : 0); });
-      var year = 1;
-      var remainingInYear = entitlementForYear(1, s.acc.threshold);
-      var guard = 0;
-      ordered.forEach(function(p){
-        var remaining = countBusinessDays(p.inicio, p.fin);
-        var parts = [];
-        while (remaining > 0 && guard < 2000){
-          guard++;
-          if (remainingInYear <= 0){
-            year++;
-            remainingInYear = entitlementForYear(year, s.acc.threshold);
-            continue;
-          }
-          var take = Math.min(remaining, remainingInYear);
-          var ventana = yearWindow(emp.fechaIngreso, year);
-          var lbl = "Año " + year + " (" + fmtDate(ventana.inicio) + " → " + fmtDate(ventana.fin) + ")";
-          if (parts.indexOf(lbl) === -1) parts.push(lbl);
-          remaining -= take;
-          remainingInYear -= take;
-        }
-        periodoYearLabel[p.id] = parts.join(", ");
-      });
-    })();
+    var periodoYearLabel = computePeriodoYearLabels(emp);
     var periodosRows = emp.periodos.length
       ? emp.periodos.map(function(p){
           var dias = countBusinessDays(p.inicio, p.fin);
@@ -1415,6 +1419,7 @@
   function abrirComprobante(emp, periodo, centroKey){
     var folio = assignComprobanteFolio(emp, periodo, centroKey);
     var dias = countBusinessDays(periodo.inicio, periodo.fin);
+    var anioLabel = computePeriodoYearLabels(emp)[periodo.id] || "";
     var win = window.open("", "_blank");
     if (!win){
       alert("El comprobante fue generado (folio " + folio + ") pero el navegador bloqueó la ventana emergente. Habilita las ventanas emergentes para este sitio e intenta nuevamente con el botón \"Comprobante\".");
@@ -1454,6 +1459,7 @@
         (emp.cargo ? '<tr><th>Cargo</th><td>'+escapeHtml(emp.cargo)+'</td></tr>' : '')+
         '<tr><th>Centro</th><td>'+escapeHtml(centerLabel(centroKey))+'</td></tr>'+
         '<tr><th>Periodo de vacaciones</th><td>'+fmtDate(periodo.inicio)+' → '+fmtDate(periodo.fin)+' ('+dias+' días hábiles)</td></tr>'+
+        (anioLabel ? '<tr><th>Corresponde a</th><td>'+escapeHtml(anioLabel)+'</td></tr>' : '')+
         (periodo.nota ? '<tr><th>Nota</th><td>'+escapeHtml(periodo.nota)+'</td></tr>' : '')+
       '</table>'+
       '<p class="legal">Se deja constancia, para los efectos del artículo 67° del Código del Trabajo, que el/la '+
