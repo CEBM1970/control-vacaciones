@@ -620,11 +620,11 @@
     var admins;
     if (Array.isArray(raw.admins)){
       admins = raw.admins.filter(function(a){ return a && a.username; }).map(function(a){
-        return { id: a.id || uid(), username: a.username, pinHash: a.pinHash, superadmin: !!a.superadmin };
+        return { id: a.id || uid(), username: a.username, pinHash: a.pinHash, superadmin: !!a.superadmin, email: a.email || "" };
       });
     } else if (raw.admin && raw.admin.username){
       // Formato antiguo (un solo administrador): se migra como super administrador único.
-      admins = [{ id: uid(), username: raw.admin.username, pinHash: raw.admin.pinHash, superadmin: true }];
+      admins = [{ id: uid(), username: raw.admin.username, pinHash: raw.admin.pinHash, superadmin: true, email: raw.admin.email || "" }];
     } else {
       admins = [];
     }
