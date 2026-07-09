@@ -519,6 +519,33 @@
   </div>
 </div>
 
+<!-- Modal: aviso de vacaciones registradas (abrir correo o copiar manualmente) -->
+<div class="overlay" id="periodoNotifyOverlay" hidden>
+  <div class="modal" style="max-width:540px;">
+    <h2>Aviso para el administrador</h2>
+    <p class="note" style="margin:0 0 12px;">El periodo se guardó correctamente. Puedes intentar abrir tu programa de correo, o copiar
+      este mensaje y enviarlo tú mismo (por correo web, WhatsApp, etc.) si tu computador no tiene un cliente de correo configurado.</p>
+    <div class="form-col">
+      <label class="field">Para
+        <input type="text" id="periodoNotifyTo" disabled>
+      </label>
+      <label class="field">Asunto
+        <input type="text" id="periodoNotifySubject" disabled>
+      </label>
+      <label class="field">Mensaje
+        <textarea id="periodoNotifyBody" rows="8" readonly
+          style="font:inherit;font-size:13.5px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-primary);resize:vertical;"></textarea>
+      </label>
+    </div>
+    <p class="note" id="periodoNotifyCopied" hidden style="color:var(--good);font-weight:600;">Mensaje copiado al portapapeles.</p>
+    <div class="actions">
+      <button class="ghost" id="periodoNotifyClose">Cerrar</button>
+      <button class="ghost" id="periodoNotifyCopy">Copiar mensaje</button>
+      <button class="primary" id="periodoNotifyMailto">Abrir programa de correo</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
@@ -1181,6 +1208,7 @@
   }
 
   // ---------- Aviso por correo al registrar vacaciones (operadores) ----------
+  var pendingNotifyMailto = null;
   function notifyAdminsOfNuevoPeriodo(emp, periodo, centroKey){
     var dias = countBusinessDays(periodo.inicio, periodo.fin);
     var destinatarios = state.admins
@@ -1202,13 +1230,48 @@
       alert('El periodo se registró correctamente.\n\nPara enviar un aviso por correo al administrador, primero configúrale un correo en "Gestionar operadores" → Administradores → Editar.');
       return;
     }
-    var mailtoUrl = "mailto:" + destinatarios.join(",") + "?subject=" + encodeURIComponent(asunto) + "&body=" + encodeURIComponent(cuerpo);
+    pendingNotifyMailto = "mailto:" + destinatarios.join(",") + "?subject=" + encodeURIComponent(asunto) + "&body=" + encodeURIComponent(cuerpo);
+    document.getElementById("periodoNotifyTo").value = destinatarios.join(", ");
+    document.getElementById("periodoNotifySubject").value = asunto;
+    document.getElementById("periodoNotifyBody").value = cuerpo;
+    document.getElementById("periodoNotifyCopied").hidden = true;
+    document.getElementById("periodoNotifyOverlay").hidden = false;
+  }
+  document.getElementById("periodoNotifyClose").addEventListener("click", function(){
+    document.getElementById("periodoNotifyOverlay").hidden = true;
+    pendingNotifyMailto = null;
+  });
+  document.getElementById("periodoNotifyMailto").addEventListener("click", function(){
+    if (!pendingNotifyMailto) return;
     var a = document.createElement("a");
-    a.href = mailtoUrl;
+    a.href = pendingNotifyMailto;
     a.style.display = "none";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  });
+  document.getElementById("periodoNotifyCopy").addEventListener("click", function(){
+    var to = document.getElementById("periodoNotifyTo").value;
+    var subject = document.getElementById("periodoNotifySubject").value;
+    var body = document.getElementById("periodoNotifyBody").value;
+    var fullText = "Para: " + to + "\nAsunto: " + subject + "\n\n" + body;
+    var copiedNote = document.getElementById("periodoNotifyCopied");
+    var showCopied = function(){ copiedNote.hidden = false; };
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(fullText).then(showCopied).catch(function(){ fallbackCopy(fullText, showCopied); });
+    } else {
+      fallbackCopy(fullText, showCopied);
+    }
+  });
+  function fallbackCopy(text, onDone){
+    var ta = document.getElementById("periodoNotifyBody");
+    var prevValue = ta.value;
+    ta.value = text;
+    ta.focus();
+    ta.select();
+    try { document.execCommand("copy"); } catch(e){ /* noop */ }
+    ta.value = prevValue;
+    onDone();
   }
 
   document.getElementById("tableHost").addEventListener("click", function(e){
