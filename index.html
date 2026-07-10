@@ -118,6 +118,7 @@
   button[data-admin-action="remove"]::before, button[data-op-action="remove"]::before { content: "✕"; font-size:11px; }
   button[data-action="add-periodo"]::before { content: "+"; font-weight:700; }
   button[data-action="emit-comprobante"]::before { content: "⎙"; }
+  button[data-action="cartola"]::before { content: "▤"; }
 
   input, select {
     font: inherit; font-size: 13.5px; padding: 8px 11px; border-radius: var(--radius-sm);
@@ -347,6 +348,7 @@
       <button class="ghost small" id="btnImportJson" style="align-self:flex-end;">Importar datos</button>
       <input type="file" id="fileImport" accept="application/json" hidden>
       <button class="ghost small" id="btnExportCsv" style="align-self:flex-end;">Exportar CSV</button>
+      <button class="ghost small" id="btnMonthlyReport" style="align-self:flex-end;">Informe mensual de vacaciones</button>
       <button class="primary small" id="btnAddEmployee" style="align-self:flex-end;">+ Colaborador</button>
     </div>
 
@@ -448,6 +450,23 @@
     <p class="note" id="holEditNote">Los feriados con ⛔ fueron deshabilitados manualmente y no se descuentan de los días hábiles. Solo el administrador puede editarlos.</p>
     <div class="actions">
       <button class="ghost" id="holClose">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: informe mensual de vacaciones tomadas -->
+<div class="overlay" id="monthlyReportOverlay" hidden>
+  <div class="modal">
+    <h2>Informe mensual de vacaciones tomadas</h2>
+    <div class="form-col">
+      <label class="field">Mes a informar
+        <input type="month" id="monthlyReportMonth">
+      </label>
+      <p class="note" id="monthlyReportScopeNote"></p>
+    </div>
+    <div class="actions">
+      <button class="ghost" id="monthlyReportCancel">Cancelar</button>
+      <button class="primary" id="monthlyReportGenerate">Generar</button>
     </div>
   </div>
 </div>
@@ -1153,6 +1172,7 @@
             '</div>'+
           '</td>'+
           '<td>'+
+            '<button class="small ghost" data-action="cartola" data-id="'+emp.id+'">Cartola</button> '+
             (isViewerOperator() ? '' : '<button class="small ghost" data-action="edit" data-id="'+emp.id+'">Editar</button> ')+
             (currentUser && currentUser.role === "admin" ? '<button class="small ghost" data-action="move" data-id="'+emp.id+'">Mover de centro</button> ' : '')+
             (isViewerOperator() ? '' : '<button class="small danger ghost" data-action="delete" data-id="'+emp.id+'">Eliminar</button>')+
@@ -1178,6 +1198,35 @@
   }
   function totalDiasTomados(emp){
     return emp.periodos.reduce(function(sum, p){ return sum + countBusinessDays(p.inicio, p.fin); }, 0);
+  }
+  // Calcula, año de antigüedad por año, cuántos días se devengaron, tomaron y quedan pendientes,
+  // consumiendo el pool total de días tomados siempre desde el año más antiguo (FIFO). Se usa tanto
+  // en la tabla "Devengo por año" en pantalla como en la cartola imprimible del colaborador, para que
+  // ambos lugares muestren siempre los mismos números (una sola fuente de verdad para este cálculo).
+  function computeYearBalances(emp, acc){
+    var poolTomados = totalDiasTomados(emp);
+    var completed = [];
+    for (var y = 1; y <= Math.max(acc.yearsCompleted, 1); y++){
+      var ent = entitlementForYear(y, acc.threshold);
+      var ventana = yearWindow(emp.fechaIngreso, y);
+      var tomadosVentana = Math.min(Math.max(poolTomados, 0), ent);
+      poolTomados -= tomadosVentana;
+      var pendienteVentana = ent - tomadosVentana;
+      completed.push({ year: y, ent: ent, tomados: tomadosVentana, pendiente: pendienteVentana, ventana: ventana });
+      if (y > acc.yearsCompleted) break;
+    }
+    var ventanaActual = yearWindow(emp.fechaIngreso, acc.yearsCompleted + 1);
+    var tomadosActual = Math.max(poolTomados, 0);
+    var devengadoActual = acc.monthsIntoCurrentYear * (acc.currentYearEntitlement / 12);
+    var current = {
+      year: acc.yearsCompleted + 1,
+      ent: acc.currentYearEntitlement,
+      tomados: tomadosActual,
+      devengado: devengadoActual,
+      saldo: devengadoActual - tomadosActual,
+      ventana: ventanaActual
+    };
+    return { completed: completed, current: current };
   }
   // Para cada periodo tomado, determina a qué año(s) de devengo corresponden sus días,
   // consumiendo los "cupos" de año en año (del más antiguo al más reciente) en el mismo orden
@@ -1216,25 +1265,18 @@
     // Las vacaciones tomadas se descuentan siempre desde el año de antigüedad más antiguo
     // hacia el más reciente (FIFO), sin importar la fecha real en que se tomaron, para que
     // no queden periodos antiguos con saldo pendiente mientras haya consumo disponible.
-    var poolTomados = totalDiasTomados(emp);
-    var yearsRows = "";
-    for (var y = 1; y <= Math.max(s.acc.yearsCompleted, 1); y++){
-      var ent = entitlementForYear(y, s.acc.threshold);
-      var ventana = yearWindow(emp.fechaIngreso, y);
-      var tomadosVentana = Math.min(Math.max(poolTomados, 0), ent);
-      poolTomados -= tomadosVentana;
-      var pendienteVentana = ent - tomadosVentana;
-      var pendClass = pendienteVentana <= 0 ? "good" : (pendienteVentana < ent ? "warning" : "critical");
-      yearsRows += '<tr><td>Año '+y+'<div class="note" style="margin:2px 0 0;">'+fmtDate(ventana.inicio)+' → '+fmtDate(ventana.fin)+'</div></td>'+
-        '<td class="num">'+ent+(ent>15?' <span class="note" style="display:inline;">(progresivo)</span>':'')+'</td>'+
-        '<td class="num">'+fmt1(tomadosVentana)+'</td>'+
-        '<td class="num"><span class="badge '+pendClass+'">'+fmt1(pendienteVentana)+'</span></td>'+
+    var bal = computeYearBalances(emp, s.acc);
+    var yearsRows = bal.completed.map(function(row){
+      var pendClass = row.pendiente <= 0 ? "good" : (row.pendiente < row.ent ? "warning" : "critical");
+      return '<tr><td>Año '+row.year+'<div class="note" style="margin:2px 0 0;">'+fmtDate(row.ventana.inicio)+' → '+fmtDate(row.ventana.fin)+'</div></td>'+
+        '<td class="num">'+row.ent+(row.ent>15?' <span class="note" style="display:inline;">(progresivo)</span>':'')+'</td>'+
+        '<td class="num">'+fmt1(row.tomados)+'</td>'+
+        '<td class="num"><span class="badge '+pendClass+'">'+fmt1(row.pendiente)+'</span></td>'+
       '</tr>';
-      if (y > s.acc.yearsCompleted) break;
-    }
-    var ventanaActual = yearWindow(emp.fechaIngreso, s.acc.yearsCompleted+1);
-    var tomadosActual = Math.max(poolTomados, 0);
-    var devengadoActual = s.acc.monthsIntoCurrentYear*(s.acc.currentYearEntitlement/12);
+    }).join("");
+    var ventanaActual = bal.current.ventana;
+    var tomadosActual = bal.current.tomados;
+    var devengadoActual = bal.current.devengado;
     var priorNote = s.acc.priorYears > 0
       ? '<p class="note">Años reconocidos de empleadores anteriores: <strong>'+s.acc.priorYears+'</strong> (tope legal 10).'+
         (s.acc.threshold > 0
@@ -1504,12 +1546,192 @@
     win.document.close();
   }
 
+  // ---------- Envoltorio común para otros documentos imprimibles (cartola, informes) ----------
+  // A diferencia del comprobante (que tiene su propio formato con folio legal), estos son
+  // documentos informativos de solo lectura: no asignan folio ni modifican el estado.
+  function printableWindowHtml(docTitle, tituloDocumento, bodyHtml){
+    return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'+
+      '<title>'+escapeHtml(docTitle)+'</title>'+
+      '<style>'+
+        'body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;max-width:900px;margin:32px auto;padding:0 24px;}'+
+        '.header{display:flex;align-items:center;gap:16px;border-bottom:3px solid #1a5c3a;padding-bottom:16px;margin-bottom:24px;}'+
+        '.header img{height:56px;width:auto;}'+
+        '.header h1{font-size:18px;margin:0;color:#1a5c3a;}'+
+        '.header p{margin:2px 0 0;font-size:12.5px;color:#555;}'+
+        'h2{font-size:16px;margin:0 0 4px;}'+
+        '.subtitle{font-size:13px;color:#555;margin:0 0 20px;}'+
+        'table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;}'+
+        'td,th{border:1px solid #ccc;padding:7px 9px;text-align:left;}'+
+        'th{background:#f2f6f4;}'+
+        '.num{text-align:right;}'+
+        '.footer{margin-top:36px;font-size:11px;color:#888;text-align:center;}'+
+        '.no-print{margin:24px 0;text-align:center;}'+
+        '.no-print button{font:inherit;font-size:14px;padding:10px 20px;border-radius:8px;border:1px solid #1a5c3a;background:#1a5c3a;color:#fff;cursor:pointer;}'+
+        '@media print{.no-print{display:none;}body{margin:0;padding:0 12px;}}'+
+      '</style></head><body>'+
+      '<div class="header">'+
+        '<img src="logo.png" alt="Preserva" onerror="this.style.display=\'none\'">'+
+        '<div><h1>Preserva Ltda</h1><p>Control de Vacaciones del Personal</p></div>'+
+      '</div>'+
+      '<h2>'+escapeHtml(tituloDocumento)+'</h2>'+
+      bodyHtml+
+      '<div class="no-print"><button onclick="window.print()">Imprimir / Guardar como PDF</button></div>'+
+      '<div class="footer">Preserva Ltda — Documento generado automáticamente por el sistema de Control de Vacaciones.</div>'+
+      '<script>window.onload = function(){ setTimeout(function(){ window.print(); }, 200); };<\/script>'+
+      '</body></html>';
+  }
+  function openPrintWindow(docTitle, tituloDocumento, bodyHtml){
+    var win = window.open("", "_blank");
+    if (!win){
+      alert("El navegador bloqueó la ventana emergente. Habilita las ventanas emergentes para este sitio e intenta nuevamente.");
+      return null;
+    }
+    win.document.open();
+    win.document.write(printableWindowHtml(docTitle, tituloDocumento, bodyHtml));
+    win.document.close();
+    return win;
+  }
+
+  // ---------- Cartola de vacaciones (resumen individual para entregar al colaborador) ----------
+  function abrirCartola(emp){
+    var s = employeeSummary(emp);
+    var bal = computeYearBalances(emp, s.acc);
+    var rows = bal.completed.filter(function(r){ return r.pendiente > 0.05; });
+    var showCurrent = bal.current.saldo > 0.05;
+    var rowsHtml = rows.map(function(r){
+      return '<tr><td>Año '+r.year+'<div style="font-size:11.5px;color:#666;">'+fmtDate(r.ventana.inicio)+' → '+fmtDate(r.ventana.fin)+'</div></td>'+
+        '<td class="num">'+r.ent+'</td><td class="num">'+fmt1(r.tomados)+'</td><td class="num">'+fmt1(r.pendiente)+'</td></tr>';
+    }).join("");
+    if (showCurrent){
+      rowsHtml += '<tr><td>Año '+bal.current.year+' (en curso)<div style="font-size:11.5px;color:#666;">'+fmtDate(bal.current.ventana.inicio)+' → '+fmtDate(bal.current.ventana.fin)+'</div></td>'+
+        '<td class="num">'+bal.current.ent+'</td><td class="num">'+fmt1(bal.current.tomados)+'</td><td class="num">'+fmt1(bal.current.saldo)+' *</td></tr>';
+    }
+    if (!rowsHtml){
+      rowsHtml = '<tr><td colspan="4" style="text-align:center;color:#888;">Sin saldo de vacaciones pendiente a la fecha.</td></tr>';
+    }
+    var body =
+      '<p class="subtitle">Corte al '+fmtDate(uiRefDate)+'</p>'+
+      '<table>'+
+        '<tr><th style="width:220px;">Colaborador</th><td>'+escapeHtml(emp.nombre)+'</td></tr>'+
+        (emp.rut ? '<tr><th>RUT</th><td>'+escapeHtml(emp.rut)+'</td></tr>' : '')+
+        (emp.cargo ? '<tr><th>Cargo</th><td>'+escapeHtml(emp.cargo)+'</td></tr>' : '')+
+        (emp.fechaIngreso ? '<tr><th>Fecha de ingreso</th><td>'+fmtDate(emp.fechaIngreso)+'</td></tr>' : '')+
+        '<tr><th>Centro</th><td>'+escapeHtml(centerLabel(activeCenterKey()))+'</td></tr>'+
+      '</table>'+
+      '<table>'+
+        '<thead><tr><th>Periodo</th><th class="num">Días/año</th><th class="num">Tomados</th><th class="num">Saldo pendiente</th></tr></thead>'+
+        '<tbody>'+rowsHtml+'</tbody>'+
+      '</table>'+
+      (showCurrent ? '<p style="font-size:11.5px;color:#666;">(*) año en curso: saldo pendiente calculado sobre los días devengados proporcionalmente a la fecha de corte, no sobre el total anual.</p>' : '');
+    openPrintWindow('Cartola de Vacaciones - '+emp.nombre, 'Cartola de Vacaciones', body);
+  }
+
+  // ---------- Informe mensual de vacaciones tomadas (conciliación con nómina/asistencia) ----------
+  var SPANISH_MONTHS = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+  function monthBounds(yyyyMm){
+    var parts = yyyyMm.split("-");
+    var y = Number(parts[0]), m = Number(parts[1]);
+    var start = new Date(Date.UTC(y, m - 1, 1));
+    var end = new Date(Date.UTC(y, m, 0)); // día 0 del mes siguiente = último día de este mes
+    return { inicio: toISO(start), fin: toISO(end) };
+  }
+  function clipRangeToMonth(pInicio, pFin, monthInicio, monthFin){
+    var start = pInicio < monthInicio ? monthInicio : pInicio;
+    var end = pFin > monthFin ? monthFin : pFin;
+    if (parseISO(start) > parseISO(end)) return null; // sin superposición con el mes
+    return { inicio: start, fin: end };
+  }
+  function abrirInformeMensual(mesStr, centrosScope){
+    var bounds = monthBounds(mesStr);
+    var rows = [];
+    centrosScope.forEach(function(key){
+      var center = state.centers[key];
+      if (!center) return;
+      center.employees.forEach(function(emp){
+        emp.periodos.forEach(function(p){
+          var clipped = clipRangeToMonth(p.inicio, p.fin, bounds.inicio, bounds.fin);
+          if (!clipped) return;
+          var dias = countBusinessDays(clipped.inicio, clipped.fin);
+          if (dias <= 0) return;
+          rows.push({
+            centro: centerLabel(key),
+            nombre: emp.nombre,
+            rut: emp.rut || "",
+            cargo: emp.cargo || "",
+            rango: fmtDate(p.inicio) + " → " + fmtDate(p.fin),
+            dias: dias,
+            nota: p.nota || ""
+          });
+        });
+      });
+    });
+    rows.sort(function(a,b){
+      if (a.centro !== b.centro) return a.centro < b.centro ? -1 : 1;
+      if (a.nombre !== b.nombre) return a.nombre < b.nombre ? -1 : 1;
+      return 0;
+    });
+    var parts = mesStr.split("-");
+    var mesLabel = (SPANISH_MONTHS[Number(parts[1]) - 1] || "") + " " + parts[0];
+    var showCentroCol = centrosScope.length > 1;
+    var totalDias = rows.reduce(function(sum, r){ return sum + r.dias; }, 0);
+    var tableRows = rows.length
+      ? rows.map(function(r){
+          return '<tr>'+
+            (showCentroCol ? '<td>'+escapeHtml(r.centro)+'</td>' : '')+
+            '<td>'+escapeHtml(r.nombre)+'</td>'+
+            '<td>'+escapeHtml(r.rut)+'</td>'+
+            '<td>'+escapeHtml(r.cargo)+'</td>'+
+            '<td>'+r.rango+'</td>'+
+            '<td class="num">'+r.dias+'</td>'+
+            '<td>'+escapeHtml(r.nota)+'</td>'+
+          '</tr>';
+        }).join("")
+      : '<tr><td colspan="'+(showCentroCol?7:6)+'" style="text-align:center;color:#888;">Sin vacaciones registradas en este periodo.</td></tr>';
+    var scopeLabel = showCentroCol ? "Todos los centros de negocio" : centerLabel(centrosScope[0]);
+    var body =
+      '<p class="subtitle">'+escapeHtml(scopeLabel)+' &nbsp;·&nbsp; Emitido el '+fmtDate(todayISO())+' por '+escapeHtml(currentUser.username)+'</p>'+
+      '<table>'+
+        '<thead><tr>'+
+          (showCentroCol ? '<th>Centro</th>' : '')+
+          '<th>Colaborador</th><th>RUT</th><th>Cargo</th><th>Periodo de vacaciones</th><th class="num">Días hábiles en el mes</th><th>Nota</th>'+
+        '</tr></thead>'+
+        '<tbody>'+tableRows+'</tbody>'+
+        (rows.length ? '<tfoot><tr><td colspan="'+(showCentroCol?5:4)+'" style="text-align:right;font-weight:700;">Total días hábiles en el mes</td><td class="num" style="font-weight:700;">'+totalDias+'</td><td></td></tr></tfoot>' : '')+
+      '</table>';
+    openPrintWindow('Informe de Vacaciones - '+mesLabel, 'Informe de Vacaciones Tomadas — '+mesLabel, body);
+  }
+  document.getElementById("btnMonthlyReport").addEventListener("click", function(){
+    document.getElementById("monthlyReportMonth").value = todayISO().slice(0,7);
+    var isAdmin = currentUser && currentUser.role === "admin";
+    document.getElementById("monthlyReportScopeNote").textContent = isAdmin
+      ? "Se incluirán todos los centros de negocio."
+      : ("Se incluirá el centro: " + centerLabel(activeCenterKey()) + ".");
+    document.getElementById("monthlyReportOverlay").hidden = false;
+  });
+  document.getElementById("monthlyReportCancel").addEventListener("click", function(){
+    document.getElementById("monthlyReportOverlay").hidden = true;
+  });
+  document.getElementById("monthlyReportGenerate").addEventListener("click", function(){
+    var mesStr = document.getElementById("monthlyReportMonth").value || todayISO().slice(0,7);
+    var isAdmin = currentUser && currentUser.role === "admin";
+    var scope = isAdmin ? CENTERS.map(function(c){ return c.key; }) : [activeCenterKey()];
+    document.getElementById("monthlyReportOverlay").hidden = true;
+    abrirInformeMensual(mesStr, scope);
+  });
+
   document.getElementById("tableHost").addEventListener("click", function(e){
     var actionBtn = e.target.closest("[data-action]");
     if (actionBtn){
       e.stopPropagation();
       var action = actionBtn.getAttribute("data-action");
       var employees = activeCenterEmployees();
+      if (action === "cartola"){
+        // Disponible para todos los roles (incluido "solo lectura"): es un documento de solo
+        // consulta, no modifica ningún dato ni asigna folio.
+        var empCartola = employees.filter(function(x){ return x.id === actionBtn.getAttribute("data-id"); })[0];
+        if (empCartola) abrirCartola(empCartola);
+        return;
+      }
       if (action === "edit"){ if (isViewerOperator()) return; openEmployeeModal(actionBtn.getAttribute("data-id")); return; }
       if (action === "delete"){
         if (isViewerOperator()) return;
