@@ -770,6 +770,12 @@
   var syncInfo = { state: "off", time: null, message: "" }; // off|connecting|synced|needs-permission|error
   var syncTimer = null;
   var pollIntervalId = null;
+  // Secciones "globales" (compartidas por todos los centros) que este dispositivo modificó
+  // localmente y aún no confirmó como escritas en el archivo remoto. Solo estas secciones se
+  // sobrescriben con la copia local al fusionar; el resto siempre toma la versión más reciente
+  // del remoto, para no pisar cambios de otro administrador con una copia local desactualizada
+  // (por ejemplo, la URL del script de aviso por correo desapareciendo tras sincronizar).
+  var localDirty = { admins: false, operators: false, settings: false, customHolidays: false, disabledHolidays: false };
   var IDB_NAME = "control_vacaciones_db", IDB_STORE = "kv";
   var SYNC_FILENAME = "control_vacaciones_sync.json";
 
@@ -822,15 +828,20 @@
   function overlayMergeAuthoritative(mergedBase){
     // Sobrescribe solo las secciones sobre las que el usuario actual tiene autoridad,
     // conservando lo remoto para el resto (para no pisar cambios de otros centros).
+    // Para las secciones "globales" (admins/operators/settings/feriados), solo se sobrescriben
+    // con la copia local si ESTE dispositivo las modificó realmente (ver localDirty) — de lo
+    // contrario se conserva la versión recién leída del remoto, que siempre es al menos igual
+    // de reciente. Esto evita que una copia local desactualizada borre, por ejemplo, la URL del
+    // script guardada por otro administrador desde otro computador.
     if (currentUser && currentUser.role === "operator"){
       (currentUser.centros || []).forEach(function(k){ mergedBase.centers[k] = state.centers[k]; });
     } else if (currentUser && currentUser.role === "admin"){
       mergedBase.centers[uiAdminActiveCenter] = state.centers[uiAdminActiveCenter];
-      mergedBase.admins = state.admins;
-      mergedBase.operators = state.operators;
-      mergedBase.customHolidays = state.customHolidays;
-      mergedBase.disabledHolidays = state.disabledHolidays;
-      mergedBase.settings = state.settings;
+      if (localDirty.admins) mergedBase.admins = state.admins;
+      if (localDirty.operators) mergedBase.operators = state.operators;
+      if (localDirty.customHolidays) mergedBase.customHolidays = state.customHolidays;
+      if (localDirty.disabledHolidays) mergedBase.disabledHolidays = state.disabledHolidays;
+      if (localDirty.settings) mergedBase.settings = state.settings;
     } else {
       // Sin sesión (asistente de configuración inicial): usar el estado local completo.
       return normalizeState(state);
@@ -845,6 +856,10 @@
   }
   function doSync(){
     if (!backupDirHandle) return Promise.resolve();
+    // Instantánea de qué secciones locales están "sucias" en este momento: si la escritura
+    // tiene éxito, solo se limpian estas (una edición nueva que llegue mientras el archivo se
+    // escribe no debe darse por sincronizada todavía).
+    var dirtySnapshot = { admins: localDirty.admins, operators: localDirty.operators, settings: localDirty.settings, customHolidays: localDirty.customHolidays, disabledHolidays: localDirty.disabledHolidays };
     return backupDirHandle.queryPermission({ mode: "readwrite" }).then(function(perm){
       if (perm !== "granted"){
         syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
@@ -862,6 +877,7 @@
           }).then(function(){
             state = merged;
             if (idbSupported()) idbSet("appState", state).catch(function(){});
+            Object.keys(dirtySnapshot).forEach(function(k){ if (dirtySnapshot[k]) localDirty[k] = false; });
           });
         });
       });
@@ -1960,6 +1976,7 @@
       var date = t.getAttribute("data-hol-toggle");
       var idx = state.disabledHolidays.indexOf(date);
       if (idx === -1) state.disabledHolidays.push(date); else state.disabledHolidays.splice(idx,1);
+      localDirty.disabledHolidays = true;
       persistState();
       renderHolidayModal();
       return;
@@ -1968,6 +1985,7 @@
     if (r){
       var date2 = r.getAttribute("data-hol-remove");
       state.customHolidays = state.customHolidays.filter(function(h){ return h.date !== date2; });
+      localDirty.customHolidays = true;
       persistState();
       renderHolidayModal();
     }
@@ -1981,6 +1999,7 @@
     document.getElementById("holNewDate").value = "";
     document.getElementById("holNewName").value = "";
     holYear = Number(date.slice(0,4));
+    localDirty.customHolidays = true;
     persistState();
     renderHolidayModal();
   });
@@ -2022,8 +2041,8 @@
         CENTERS.forEach(function(c){
           if (raw.centers && raw.centers[c.key]) state.centers[c.key] = normalized.centers[c.key];
         });
-        if (raw.customHolidays) state.customHolidays = normalized.customHolidays;
-        if (raw.disabledHolidays) state.disabledHolidays = normalized.disabledHolidays;
+        if (raw.customHolidays){ state.customHolidays = normalized.customHolidays; localDirty.customHolidays = true; }
+        if (raw.disabledHolidays){ state.disabledHolidays = normalized.disabledHolidays; localDirty.disabledHolidays = true; }
         onDataChanged();
         alert("Datos importados correctamente.");
       } catch (err){
@@ -2070,6 +2089,7 @@
       var adm = { id: uid(), username: user, pinHash: hash, superadmin: true };
       state.admins = [adm];
       currentUser = { role: "admin", id: adm.id, username: user, superadmin: true };
+      localDirty.admins = true;
       persistState();
       renderApp();
     });
@@ -2166,6 +2186,7 @@
     state.settings = state.settings || { notifyWebhookUrl: "", notifyWebhookSecret: "" };
     state.settings.notifyWebhookUrl = document.getElementById("webhookUrl").value.trim();
     state.settings.notifyWebhookSecret = document.getElementById("webhookSecret").value.trim();
+    localDirty.settings = true;
     persistState();
     var resEl = document.getElementById("webhookTestResult");
     resEl.style.color = "var(--good)";
@@ -2275,6 +2296,7 @@
       }
       if (confirm('¿Quitar el acceso del administrador "'+admRemove.username+'"?')){
         state.admins = state.admins.filter(function(a){ return a.id !== admId; });
+        localDirty.admins = true;
         persistState();
         renderOperatorsGrid();
       }
@@ -2295,6 +2317,7 @@
       var opRemoveCentros = opRemove ? (opRemove.centros || []).map(centerLabel).join(", ") : "";
       if (opRemove && confirm("¿Quitar el acceso del operador \""+opRemove.username+"\" de " + opRemoveCentros + "?")){
         state.operators = state.operators.filter(function(o){ return o.id !== opId; });
+        localDirty.operators = true;
         persistState();
         renderOperatorsGrid();
       }
@@ -2384,6 +2407,7 @@
           state.operators.push({ id: uid(), centros: selectedCentros, username: user, pinHash: hash, viewer: isViewer });
         }
       }
+      if (isAdmin) localDirty.admins = true; else localDirty.operators = true;
       document.getElementById("operatorFormOverlay").hidden = true;
       persistState();
       renderOperatorsGrid();
