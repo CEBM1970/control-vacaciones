@@ -250,24 +250,27 @@
   .operator-row .op-row-user { font-weight:600; overflow-wrap:anywhere; }
   .operator-row .op-row-actions { display:flex; gap:4px; flex-wrap:nowrap; flex:none; }
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div class="wrap">
 
   <div class="sync-bar" id="globalSyncBar"></div>
 
-  <!-- Pantalla: conectar carpeta compartida -->
+  <!-- Pantalla: conectar con Google Drive -->
   <div class="auth-screen" id="screenConnect" hidden>
     <div class="auth-card">
       <h2>Control de Vacaciones — Multi Centro</h2>
       <p class="sub">Esta app comparte los datos de los 4 centros de negocio (Administración, Talca, Los Ángeles y Aserradero) a
-        través de una carpeta de Google Drive sincronizada en cada computador. Conecta la carpeta compartida para continuar.</p>
+        través de Google Drive. Inicia sesión con tu cuenta de Google (@preserva.cl) para continuar.</p>
       <div class="actions">
-        <button class="primary" id="btnConnectFolder">Conectar carpeta compartida de Drive</button>
+        <button class="primary" id="btnConnectFolder">Conectar con Google</button>
         <button class="ghost small" id="btnConnectSkip">Continuar sin conectar (modo local, sin sincronizar)</button>
       </div>
-      <p class="note">Si eres el administrador y es la primera vez que configuras esto, elige o crea una carpeta dentro de tu
-        Google Drive (idealmente compartida con los 4 centros) y esta app guardará ahí el archivo de datos compartido.</p>
+      <p class="note">Si eres el administrador y es la primera vez que configuras esto, primero crea (o elige) una Unidad
+        compartida de Google Drive donde vivirán los datos de todos los centros, y compártela con las cuentas @preserva.cl
+        que deban tener acceso. Esta app se conecta a esa Unidad compartida con tu propia sesión de Google — no se pide
+        ninguna contraseña dentro de la aplicación.</p>
     </div>
   </div>
 
@@ -765,11 +768,26 @@
     return state.operators.filter(function(o){ return o.id === id; })[0] || null;
   }
 
-  // ---------- Persistencia local (IndexedDB) + sincronización en carpeta compartida ----------
-  var backupDirHandle = null;
+  // ---------- Persistencia local (IndexedDB) + sincronización vía Google Drive ----------
+  // El archivo compartido vive en una Unidad compartida de Google Drive; cada computador se
+  // conecta con la cuenta de Google (@preserva.cl) de quien lo configure, vía Google Identity
+  // Services (ventana emergente de Google, sin contraseñas dentro de esta app). El token de
+  // acceso es de corta duración y vive solo en memoria (nunca se guarda en disco); lo único que
+  // se recuerda entre sesiones es el ID del archivo de datos dentro de la Unidad compartida.
+  var GOOGLE_CLIENT_ID = "97669232901-tg9cucsp9eef9o4bjaiup8uopps9f1pl.apps.googleusercontent.com";
+  var GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+  var GOOGLE_SHARED_DRIVE_ID = "0AHFssPLi4vz9Uk9PVA";
+  var DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
+  var DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
+
+  var driveAccessToken = null;   // token de acceso vigente (en memoria, nunca persistido)
+  var driveTokenClient = null;   // cliente de Google Identity Services (se crea una sola vez)
+  var driveFileId = null;        // ID del archivo de datos dentro de la Unidad compartida (persistido)
+  var driveConnecting = false;   // evita solicitudes de token duplicadas mientras una está en curso
   var syncInfo = { state: "off", time: null, message: "" }; // off|connecting|synced|needs-permission|error
   var syncTimer = null;
   var pollIntervalId = null;
+  var tokenRefreshTimer = null;
   // Secciones "globales" (compartidas por todos los centros) que este dispositivo modificó
   // localmente y aún no confirmó como escritas en el archivo remoto. Solo estas secciones se
   // sobrescriben con la copia local al fusionar; el resto siempre toma la versión más reciente
@@ -780,7 +798,7 @@
   var SYNC_FILENAME = "control_vacaciones_sync.json";
 
   function idbSupported(){ return typeof indexedDB !== "undefined"; }
-  function fsSupported(){ return typeof window.showDirectoryPicker === "function"; }
+  function gsiSupported(){ return typeof google !== "undefined" && google.accounts && google.accounts.oauth2; }
 
   function openIDB(){
     return new Promise(function(resolve, reject){
@@ -850,161 +868,219 @@
   }
 
   function scheduleSync(){
-    if (!backupDirHandle) return;
+    if (!driveFileId || !driveAccessToken) return;
     clearTimeout(syncTimer);
     syncTimer = setTimeout(doSync, 500);
   }
+
+  // ---- Llamadas a la API de Google Drive (fetch autenticado con el token de acceso vigente) ----
+  function driveApiFetch(url, opts){
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["Authorization"] = "Bearer " + driveAccessToken;
+    return fetch(url, { method: opts.method || "GET", headers: headers, body: opts.body }).then(function(res){
+      if (res.status === 401){
+        var authErr = new Error("La sesión de Google expiró.");
+        authErr.name = "AuthError";
+        throw authErr;
+      }
+      if (!res.ok){
+        return res.text().then(function(t){
+          throw new Error("Error de Google Drive (" + res.status + "): " + t.slice(0, 200));
+        });
+      }
+      return res;
+    });
+  }
+  function readSyncFile(){
+    return driveApiFetch(DRIVE_API_BASE + "/files/" + driveFileId + "?alt=media&supportsAllDrives=true").then(function(res){
+      return res.text();
+    });
+  }
+  function writeSyncFile(obj){
+    return driveApiFetch(DRIVE_UPLOAD_BASE + "/files/" + driveFileId + "?uploadType=media&supportsAllDrives=true", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(obj, null, 2)
+    });
+  }
+  function findOrCreateSyncFile(){
+    var q = "name = '" + SYNC_FILENAME + "' and '" + GOOGLE_SHARED_DRIVE_ID + "' in parents and trashed = false";
+    var listUrl = DRIVE_API_BASE + "/files?q=" + encodeURIComponent(q) +
+      "&fields=" + encodeURIComponent("files(id,name)") +
+      "&corpora=drive&driveId=" + GOOGLE_SHARED_DRIVE_ID +
+      "&includeItemsFromAllDrives=true&supportsAllDrives=true";
+    return driveApiFetch(listUrl).then(function(res){ return res.json(); }).then(function(data){
+      if (data.files && data.files.length) return data.files[0].id;
+      // No existe todavía en la Unidad compartida: este dispositivo crea el archivo inicial
+      // con el estado local actual (normalmente vacío, la primera vez que se usa la app).
+      var metadata = { name: SYNC_FILENAME, parents: [GOOGLE_SHARED_DRIVE_ID], mimeType: "application/json" };
+      var boundary = "vacacionesboundary" + uid();
+      var body = "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) +
+        "\r\n--" + boundary + "\r\nContent-Type: application/json\r\n\r\n" + JSON.stringify(normalizeState(state)) +
+        "\r\n--" + boundary + "--";
+      return driveApiFetch(DRIVE_UPLOAD_BASE + "/files?uploadType=multipart&supportsAllDrives=true", {
+        method: "POST",
+        headers: { "Content-Type": "multipart/related; boundary=" + boundary },
+        body: body
+      }).then(function(res){ return res.json(); }).then(function(created){ return created.id; });
+    });
+  }
+
   function doSync(){
-    if (!backupDirHandle) return Promise.resolve();
+    if (!driveFileId || !driveAccessToken) return Promise.resolve();
     // Instantánea de qué secciones locales están "sucias" en este momento: si la escritura
     // tiene éxito, solo se limpian estas (una edición nueva que llegue mientras el archivo se
     // escribe no debe darse por sincronizada todavía).
     var dirtySnapshot = { admins: localDirty.admins, operators: localDirty.operators, settings: localDirty.settings, customHolidays: localDirty.customHolidays, disabledHolidays: localDirty.disabledHolidays };
-    return backupDirHandle.queryPermission({ mode: "readwrite" }).then(function(perm){
-      if (perm !== "granted"){
-        syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
-        renderSyncBar();
-        return;
-      }
-      return backupDirHandle.getFileHandle(SYNC_FILENAME, { create: true }).then(function(fh){
-        return fh.getFile().then(function(f){ return f.text(); }).catch(function(){ return ""; }).then(function(text){
-          var remoteRaw = null;
-          if (text){ try { remoteRaw = JSON.parse(text); } catch(e){ remoteRaw = null; } }
-          var merged = overlayMergeAuthoritative(remoteRaw ? normalizeState(remoteRaw) : normalizeState(state));
-          merged.updatedAt = new Date().toISOString();
-          return fh.createWritable().then(function(w){
-            return w.write(JSON.stringify(merged, null, 2)).then(function(){ return w.close(); });
-          }).then(function(){
-            state = merged;
-            if (idbSupported()) idbSet("appState", state).catch(function(){});
-            Object.keys(dirtySnapshot).forEach(function(k){ if (dirtySnapshot[k]) localDirty[k] = false; });
-          });
-        });
+    return readSyncFile().then(function(text){
+      var remoteRaw = null;
+      if (text){ try { remoteRaw = JSON.parse(text); } catch(e){ remoteRaw = null; } }
+      var merged = overlayMergeAuthoritative(remoteRaw ? normalizeState(remoteRaw) : normalizeState(state));
+      merged.updatedAt = new Date().toISOString();
+      return writeSyncFile(merged).then(function(){
+        state = merged;
+        if (idbSupported()) idbSet("appState", state).catch(function(){});
+        Object.keys(dirtySnapshot).forEach(function(k){ if (dirtySnapshot[k]) localDirty[k] = false; });
       });
     }).then(function(){
       syncInfo = { state: "synced", time: new Date(), message: "" };
       renderSyncBar();
       renderApp();
     }).catch(function(err){
-      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
-      renderSyncBar();
+      handleSyncError(err);
     });
   }
   function pollRemote(){
-    if (!backupDirHandle) return;
-    backupDirHandle.queryPermission({ mode: "readwrite" }).then(function(perm){
-      if (perm !== "granted"){
-        syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
-        renderSyncBar();
-        return;
+    if (!driveFileId || !driveAccessToken) return;
+    readSyncFile().then(function(text){
+      var remote;
+      try { remote = JSON.parse(text); } catch(e){ return; }
+      if (remote && remote.updatedAt && (!state.updatedAt || remote.updatedAt > state.updatedAt)){
+        var merged = overlayMergeAuthoritative(normalizeState(remote));
+        state = merged;
+        if (idbSupported()) idbSet("appState", state).catch(function(){});
+        renderApp();
       }
-      return backupDirHandle.getFileHandle(SYNC_FILENAME, { create: false }).then(function(fh){
-        return fh.getFile();
-      }).then(function(file){
-        return file.text();
-      }).then(function(text){
-        var remote;
-        try { remote = JSON.parse(text); } catch(e){ return; }
-        if (remote && remote.updatedAt && (!state.updatedAt || remote.updatedAt > state.updatedAt)){
-          var merged = overlayMergeAuthoritative(normalizeState(remote));
-          state = merged;
-          if (idbSupported()) idbSet("appState", state).catch(function(){});
-          renderApp();
-        }
-        syncInfo = { state: "synced", time: new Date(), message: "" };
-        renderSyncBar();
-      }).catch(function(err){
-        if (err && err.name === "NotFoundError") return; // aún no existe el archivo remoto
-        syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
-        renderSyncBar();
-      });
+      syncInfo = { state: "synced", time: new Date(), message: "" };
+      renderSyncBar();
+    }).catch(function(err){
+      handleSyncError(err);
     });
+  }
+  function handleSyncError(err){
+    if (err && err.name === "AuthError"){
+      driveAccessToken = null;
+      syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
+      renderSyncBar();
+      return;
+    }
+    syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+    renderSyncBar();
   }
   function startPolling(){
     if (pollIntervalId) return;
     pollIntervalId = setInterval(pollRemote, 20000);
-    window.addEventListener("focus", function(){ if (backupDirHandle) pollRemote(); });
-    document.addEventListener("visibilitychange", function(){ if (!document.hidden && backupDirHandle) pollRemote(); });
+    window.addEventListener("focus", function(){ if (driveFileId && driveAccessToken) pollRemote(); });
+    document.addEventListener("visibilitychange", function(){ if (!document.hidden && driveFileId && driveAccessToken) pollRemote(); });
+  }
+  function scheduleTokenRefresh(){
+    if (tokenRefreshTimer) return;
+    // Renueva el token de acceso antes de que expire (~1 hora), idealmente en silencio si la
+    // sesión de Google sigue activa en el navegador y ya se otorgó consentimiento antes.
+    tokenRefreshTimer = setInterval(function(){
+      if (driveFileId && gsiSupported()){
+        ensureDriveTokenClient();
+        driveTokenClient.requestAccessToken();
+      }
+    }, 45 * 60 * 1000);
   }
 
-  function connectSyncFolder(){
-    if (!fsSupported()){
-      alert("Tu navegador o esta vista no permite elegir una carpeta local (función disponible en Chrome/Edge de escritorio, abriendo el archivo directamente, no dentro de una vista previa embebida).");
-      return;
-    }
-    window.showDirectoryPicker({ id: "vacaciones-sync", mode: "readwrite" }).then(function(handle){
-      backupDirHandle = handle;
-      if (idbSupported()) idbSet("backupDir", handle).catch(function(){});
-      return loadFromFolder(handle);
-    }).catch(function(err){
-      if (err && err.name === "AbortError") return;
-      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
-      renderSyncBar();
+  function ensureDriveTokenClient(){
+    if (driveTokenClient) return;
+    driveTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: GOOGLE_DRIVE_SCOPE,
+      callback: function(resp){
+        driveConnecting = false;
+        if (!resp || resp.error){
+          syncInfo = { state: "error", time: syncInfo.time, message: "No se pudo conectar con Google" + (resp && resp.error ? (": " + resp.error) : "") + "." };
+          renderSyncBar();
+          return;
+        }
+        driveAccessToken = resp.access_token;
+        var chain = driveFileId ? afterTokenReconnect() : afterTokenFirstConnect();
+        chain.catch(function(err){ handleSyncError(err); });
+      }
     });
   }
-  function loadFromFolder(handle){
-    return handle.getFileHandle(SYNC_FILENAME, { create: false }).then(function(fh){
-      return fh.getFile();
-    }).then(function(file){
-      return file.text();
+  function afterTokenFirstConnect(){
+    return findOrCreateSyncFile().then(function(id){
+      driveFileId = id;
+      if (idbSupported()) idbSet("driveFileId", id).catch(function(){});
+      return readSyncFile();
     }).then(function(text){
-      var remote = JSON.parse(text);
-      state = normalizeState(remote);
+      if (text){
+        var remote = null;
+        try { remote = JSON.parse(text); } catch(e){ remote = null; }
+        if (remote) state = normalizeState(remote);
+      }
       if (idbSupported()) idbSet("appState", state).catch(function(){});
       syncInfo = { state: "synced", time: new Date(), message: "" };
       startPolling();
-      renderApp();
-    }).catch(function(err){
-      if (err && (err.name === "NotFoundError" || err.name === "TypeMismatchError")){
-        // No existe archivo remoto todavía: este computador crea el primero.
-        syncInfo = { state: "synced", time: null, message: "" };
-        startPolling();
-        return doSync().then(renderApp);
-      }
-      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+      scheduleTokenRefresh();
       renderApp();
     });
   }
-  function reauthorizeFolder(){
-    if (!backupDirHandle) return connectSyncFolder();
-    backupDirHandle.requestPermission({ mode: "readwrite" }).then(function(perm){
-      if (perm === "granted"){
-        syncInfo = { state: "synced", time: syncInfo.time, message: "" };
-        startPolling();
-        pollRemote();
-      } else {
-        syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
-        renderSyncBar();
-      }
-    }).catch(function(err){
-      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
-      renderSyncBar();
-    });
+  function afterTokenReconnect(){
+    syncInfo = { state: "synced", time: syncInfo.time, message: "" };
+    startPolling();
+    scheduleTokenRefresh();
+    return pollRemote();
+  }
+
+  function connectGoogleDrive(){
+    if (!gsiSupported()){
+      alert("Todavía se está cargando el inicio de sesión de Google. Espera unos segundos e inténtalo de nuevo (revisa también tu conexión a internet).");
+      return;
+    }
+    if (driveConnecting) return;
+    driveConnecting = true;
+    syncInfo = { state: "connecting", time: syncInfo.time, message: "" };
+    renderSyncBar();
+    ensureDriveTokenClient();
+    driveTokenClient.requestAccessToken();
+  }
+  function reauthorizeDrive(){
+    connectGoogleDrive();
   }
 
   function renderSyncBar(){
     var host = document.getElementById("globalSyncBar");
     if (!host) return;
     var dot = "off", text = "", actions = "";
-    if (!fsSupported()){
+    if (!gsiSupported()){
       dot = "off";
-      text = "Sincronización con Drive no disponible en este navegador/vista. Abre el archivo directamente en Chrome o Edge de escritorio.";
-    } else if (!backupDirHandle){
+      text = "Inicio de sesión de Google todavía no está disponible (puede tardar unos segundos en cargar, o revisa tu conexión a internet).";
+    } else if (!driveFileId){
       dot = "off";
-      text = "Sin carpeta compartida conectada — los datos solo viven en este computador.";
-      actions = '<button class="small ghost" data-sync-action="connect">Conectar carpeta compartida</button>';
+      text = "Sin conexión a Google Drive — los datos solo viven en este computador.";
+      actions = '<button class="small ghost" data-sync-action="connect">Conectar con Google</button>';
     } else if (syncInfo.state === "synced"){
       dot = "ok";
-      text = "Sincronizado con “" + escapeHtml(backupDirHandle.name) + "”" + (syncInfo.time ? (" · " + fmtTime(syncInfo.time)) : "");
-      actions = '<button class="small ghost" data-sync-action="connect">Cambiar carpeta</button>';
+      text = "Sincronizado con Google Drive" + (syncInfo.time ? (" · " + fmtTime(syncInfo.time)) : "");
+      actions = '<button class="small ghost" data-sync-action="reauth">Reconectar</button>';
     } else if (syncInfo.state === "needs-permission"){
       dot = "warn";
-      text = "Reautoriza el acceso a la carpeta compartida para sincronizar.";
-      actions = '<button class="small ghost" data-sync-action="reauth">Reautorizar</button>';
+      text = "La sesión de Google expiró o fue revocada. Reconecta para seguir sincronizando.";
+      actions = '<button class="small ghost" data-sync-action="reauth">Reconectar con Google</button>';
     } else if (syncInfo.state === "error"){
       dot = "err";
       text = "Error de sincronización" + (syncInfo.message ? (": " + escapeHtml(syncInfo.message)) : "") + ".";
-      actions = '<button class="small ghost" data-sync-action="connect">Reintentar / elegir carpeta</button>';
+      actions = '<button class="small ghost" data-sync-action="connect">Reintentar</button>';
+    } else if (syncInfo.state === "connecting"){
+      dot = "off";
+      text = "Conectando con Google…";
     } else {
       dot = "off";
       text = "Conectando…";
@@ -1015,10 +1091,10 @@
     var btn = e.target.closest("[data-sync-action]");
     if (!btn) return;
     var action = btn.getAttribute("data-sync-action");
-    if (action === "connect") connectSyncFolder();
-    else if (action === "reauth") reauthorizeFolder();
+    if (action === "connect") connectGoogleDrive();
+    else if (action === "reauth") reauthorizeDrive();
   });
-  document.getElementById("btnConnectFolder").addEventListener("click", connectSyncFolder);
+  document.getElementById("btnConnectFolder").addEventListener("click", connectGoogleDrive);
   document.getElementById("btnConnectSkip").addEventListener("click", function(){
     skippedConnect = true;
     renderApp();
@@ -2458,7 +2534,11 @@
   function renderApp(){
     renderSyncBar();
     if (!state.admins || state.admins.length === 0){
-      showScreen(backupDirHandle || !fsSupported() || skippedConnect ? "screenSetup" : "screenConnect");
+      // A diferencia del selector de carpetas local (exclusivo de Chrome/Edge de escritorio),
+      // Google Identity Services funciona en cualquier navegador con internet, así que siempre
+      // se ofrece la pantalla de conexión (el botón "Conectar con Google" avisa si todavía no
+      // terminó de cargar, en vez de saltársela en silencio).
+      showScreen(driveFileId || skippedConnect ? "screenSetup" : "screenConnect");
       return;
     }
     if (!currentUser){
@@ -2479,28 +2559,47 @@
   }
 
   // ---------- Init ----------
+  function waitForGsi(maxWaitMs){
+    // El script de Google Identity Services carga en paralelo (async); esperamos brevemente a
+    // que esté listo antes de decidir qué pantalla mostrar, para no confundir "todavía cargando"
+    // con "este navegador no lo soporta".
+    return new Promise(function(resolve){
+      if (gsiSupported()){ resolve(true); return; }
+      var waited = 0;
+      var iv = setInterval(function(){
+        waited += 150;
+        if (gsiSupported() || waited >= maxWaitMs){
+          clearInterval(iv);
+          resolve(gsiSupported());
+        }
+      }, 150);
+    });
+  }
   function init(){
     renderSyncBar();
     var loadState = idbSupported() ? idbGet("appState").catch(function(){ return null; }) : Promise.resolve(null);
-    var loadDir = idbSupported() ? idbGet("backupDir").catch(function(){ return null; }) : Promise.resolve(null);
-    Promise.all([loadState, loadDir]).then(function(results){
-      var savedState = results[0], savedDir = results[1];
+    var loadFileId = idbSupported() ? idbGet("driveFileId").catch(function(){ return null; }) : Promise.resolve(null);
+    Promise.all([loadState, loadFileId]).then(function(results){
+      var savedState = results[0], savedFileId = results[1];
       if (savedState) state = normalizeState(savedState);
-      if (savedDir && fsSupported()){
-        backupDirHandle = savedDir;
-        return backupDirHandle.queryPermission({ mode: "readwrite" }).then(function(perm){
-          if (perm === "granted"){
-            startPolling();
-            return pollRemote();
-          } else {
-            syncInfo = { state: "needs-permission", time: null, message: "" };
-          }
-        }).catch(function(){
-          syncInfo = { state: "needs-permission", time: null, message: "" };
-        });
+      if (savedFileId) {
+        driveFileId = savedFileId;
+        syncInfo = { state: "needs-permission", time: null, message: "" };
       }
     }).catch(function(){}).then(function(){
+      // Pinta de inmediato con los datos locales — no bloquea el primer dibujo esperando a
+      // Google, que puede tardar (o fallar) según la red del navegador.
       renderApp();
+      if (driveFileId){
+        // Reconexión silenciosa en segundo plano: si esta misma cuenta de Google ya está
+        // conectada en este navegador, no debería requerir ninguna ventana visible.
+        waitForGsi(8000).then(function(ready){
+          if (!ready || !driveFileId) return;
+          driveConnecting = true;
+          ensureDriveTokenClient();
+          driveTokenClient.requestAccessToken();
+        });
+      }
     });
   }
   init();
