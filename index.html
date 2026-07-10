@@ -1395,6 +1395,11 @@
           // Un operador "solo lectura" solo puede reimprimir un comprobante YA emitido; si el
           // periodo todavía no tiene folio, no se le ofrece el botón (emitir uno es una escritura).
           var showComprobanteBtn = !isViewerOperator() || !!p.comprobanteFolio;
+          // Un operador normal ya no puede quitar un periodo una vez que se emitió su
+          // comprobante (evita borrar un registro que el colaborador ya recibió firmado);
+          // un administrador o super administrador siempre puede, para poder corregir un
+          // registro erróneo que haya ingresado un operador.
+          var canRemovePeriodo = canModifyDates || (!isViewerOperator() && !p.comprobanteFolio);
           return '<tr><td>'+fmtDate(p.inicio)+' → '+fmtDate(p.fin)+
                    (periodoYearLabel[p.id] ? '<div class="note" style="margin:2px 0 0;">'+escapeHtml(periodoYearLabel[p.id])+'</div>' : '')+
                    (p.comprobanteFolio ? '<div class="note" style="margin:2px 0 0;">Comprobante N° '+escapeHtml(p.comprobanteFolio)+'</div>' : '')+
@@ -1402,7 +1407,7 @@
                  '<td style="white-space:nowrap;">'+
                    (showComprobanteBtn ? '<button class="small ghost" data-action="emit-comprobante" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Comprobante</button> ' : '')+
                    (canModifyDates ? '<button class="small ghost" data-action="edit-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Editar</button> ' : '')+
-                   (isViewerOperator() ? '' : '<button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button>')+
+                   (canRemovePeriodo ? '<button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button>' : '')+
                  '</td></tr>';
         }).join("")
       : '<tr><td colspan="4" class="note">Sin periodos registrados.</td></tr>';
@@ -1870,6 +1875,11 @@
         var empId2 = actionBtn.getAttribute("data-emp");
         var perId = actionBtn.getAttribute("data-periodo");
         var emp3 = employees.filter(function(x){ return x.id === empId2; })[0];
+        var perToRemove = emp3.periodos.filter(function(p){ return p.id === perId; })[0];
+        // Un operador normal no puede quitar un periodo con comprobante ya emitido; solo un
+        // administrador puede, para corregir un registro erróneo (ver también el botón oculto
+        // en renderDetail — esta es la misma regla aplicada del lado de la acción real).
+        if (!(currentUser && currentUser.role === "admin") && perToRemove && perToRemove.comprobanteFolio) return;
         emp3.periodos = emp3.periodos.filter(function(p){ return p.id !== perId; });
         if (uiEditingPeriodo && uiEditingPeriodo.periodoId === perId) uiEditingPeriodo = null;
         onDataChanged();
