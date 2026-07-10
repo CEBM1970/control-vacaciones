@@ -1457,6 +1457,7 @@
         '<tr><th>Colaborador</th><td>'+escapeHtml(emp.nombre)+'</td></tr>'+
         (emp.rut ? '<tr><th>RUT</th><td>'+escapeHtml(emp.rut)+'</td></tr>' : '')+
         (emp.cargo ? '<tr><th>Cargo</th><td>'+escapeHtml(emp.cargo)+'</td></tr>' : '')+
+        (emp.fechaIngreso ? '<tr><th>Fecha de ingreso</th><td>'+fmtDate(emp.fechaIngreso)+'</td></tr>' : '')+
         '<tr><th>Centro</th><td>'+escapeHtml(centerLabel(centroKey))+'</td></tr>'+
         '<tr><th>Periodo de vacaciones</th><td>'+fmtDate(periodo.inicio)+' → '+fmtDate(periodo.fin)+' ('+dias+' días hábiles)</td></tr>'+
         (anioLabel ? '<tr><th>Corresponde a</th><td>'+escapeHtml(anioLabel)+'</td></tr>' : '')+
