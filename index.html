@@ -460,7 +460,7 @@
       <p class="note" style="margin:0 0 10px;">Administradores: acceden y editan los 4 centros. Solo un super administrador puede crear, editar o quitar otros administradores.</p>
       <div class="operators-grid" id="adminsGrid" style="margin-bottom:18px;"></div>
     </div>
-    <p class="note" style="margin:0 0 14px;">Operadores por centro: cada centro de negocio solo puede ser accedido por sus operadores autorizados. Crea, edita o quita el acceso.</p>
+    <p class="note" style="margin:0 0 14px;">Operadores por centro: cada centro de negocio solo puede ser accedido por sus operadores autorizados. Un operador puede tener acceso a más de un centro, y opcionalmente puede marcarse como "solo lectura" (ve la información e imprime comprobantes ya emitidos, sin poder modificar nada). Crea, edita o quita el acceso.</p>
     <div class="operators-grid" id="operatorsGrid"></div>
     <div id="webhookSection" style="margin-top:22px;padding-top:16px;border-top:1px solid var(--gridline);">
       <h3 style="font-size:13px;margin:0 0 8px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.03em;">Aviso automático por correo (Google Apps Script)</h3>
@@ -490,8 +490,8 @@
   <div class="modal">
     <h2 id="operatorFormTitle">Operador</h2>
     <div class="form-col">
-      <label class="field" id="operatorCentroField">Centro
-        <input type="text" id="operatorCentroLabel" disabled>
+      <label class="field" id="operatorCentroField">Centros con acceso
+        <div id="operatorCentrosChecks" style="display:flex;flex-wrap:wrap;gap:10px 16px;padding:8px 2px;font-weight:400;"></div>
       </label>
       <label class="field">Usuario
         <input type="text" id="operatorUser" placeholder="Ej: talca.operador">
@@ -505,6 +505,10 @@
       <label class="field" id="operatorSuperField" hidden style="flex-direction:row;align-items:center;gap:8px;">
         <input type="checkbox" id="operatorSuperadmin" style="width:auto;">
         <span>Super administrador (puede gestionar otros administradores)</span>
+      </label>
+      <label class="field" id="operatorViewerField" hidden style="flex-direction:row;align-items:center;gap:8px;">
+        <input type="checkbox" id="operatorViewer" style="width:auto;">
+        <span>Solo lectura (puede ver la información e imprimir comprobantes ya emitidos, pero no puede agregar, editar ni eliminar nada)</span>
       </label>
       <label class="field" id="operatorEmailField" hidden>Correo (para avisos de vacaciones registradas)
         <input type="email" id="operatorEmail" placeholder="Ej: admin@preserva.cl">
@@ -686,7 +690,12 @@
       updatedAt: raw.updatedAt || null,
       admins: admins,
       operators: Array.isArray(raw.operators) ? raw.operators.map(function(o){
-        return { id: o.id || uid(), centro: o.centro, username: o.username, pinHash: o.pinHash };
+        // "centros" reemplaza al antiguo campo "centro" (un solo centro) para permitir operadores
+        // con acceso a más de un centro de negocio; se migra automáticamente el formato antiguo.
+        var centros = Array.isArray(o.centros)
+          ? o.centros.filter(function(k){ return CENTERS.some(function(c){ return c.key === k; }); })
+          : (o.centro ? [o.centro] : []);
+        return { id: o.id || uid(), centros: centros, username: o.username, pinHash: o.pinHash, viewer: !!o.viewer };
       }) : [],
       centers: centers,
       customHolidays: Array.isArray(raw.customHolidays) ? raw.customHolidays : [],
@@ -699,8 +708,9 @@
   }
 
   var state = defaultState();
-  var currentUser = null;           // { role: 'admin'|'operator', username, centro? }
+  var currentUser = null;           // { role: 'admin'|'operator', username, centros?, viewer? }
   var uiAdminActiveCenter = CENTERS[0].key;
+  var uiOperatorActiveCenter = null; // centro activo entre los asignados a un operador multi-centro
   var uiSelectedEmployee = null;
   var uiEditingEmployeeId = null;
   var uiEditingPeriodo = null;      // { empId, periodoId } - edición de fechas de un periodo (solo admin/superadmin)
@@ -730,7 +740,7 @@
     return state.admins.filter(function(a){ return a.id === id; })[0] || null;
   }
   function getOperatorsForCenter(key){
-    return state.operators.filter(function(o){ return o.centro === key; });
+    return state.operators.filter(function(o){ return (o.centros||[]).indexOf(key) !== -1; });
   }
   function getOperatorById(id){
     return state.operators.filter(function(o){ return o.id === id; })[0] || null;
@@ -794,7 +804,7 @@
     // Sobrescribe solo las secciones sobre las que el usuario actual tiene autoridad,
     // conservando lo remoto para el resto (para no pisar cambios de otros centros).
     if (currentUser && currentUser.role === "operator"){
-      mergedBase.centers[currentUser.centro] = state.centers[currentUser.centro];
+      (currentUser.centros || []).forEach(function(k){ mergedBase.centers[k] = state.centers[k]; });
     } else if (currentUser && currentUser.role === "admin"){
       mergedBase.centers[uiAdminActiveCenter] = state.centers[uiAdminActiveCenter];
       mergedBase.admins = state.admins;
@@ -1065,10 +1075,20 @@
     return { acc: acc, usados: usados, saldo: saldo };
   }
   function activeCenterKey(){
-    return currentUser && currentUser.role === "operator" ? currentUser.centro : uiAdminActiveCenter;
+    if (currentUser && currentUser.role === "operator"){
+      var cs = currentUser.centros || [];
+      if (uiOperatorActiveCenter && cs.indexOf(uiOperatorActiveCenter) !== -1) return uiOperatorActiveCenter;
+      return cs[0] || CENTERS[0].key;
+    }
+    return uiAdminActiveCenter;
   }
   function activeCenterEmployees(){
     return state.centers[activeCenterKey()].employees;
+  }
+  // Operadores marcados como "solo lectura" pueden ver todo pero no agregar, editar ni eliminar
+  // nada (colaboradores, periodos, etc.); solo pueden reimprimir comprobantes ya emitidos.
+  function isViewerOperator(){
+    return !!(currentUser && currentUser.role === "operator" && currentUser.viewer);
   }
 
   // ---------- Render: utilidades ----------
@@ -1133,9 +1153,9 @@
             '</div>'+
           '</td>'+
           '<td>'+
-            '<button class="small ghost" data-action="edit" data-id="'+emp.id+'">Editar</button> '+
+            (isViewerOperator() ? '' : '<button class="small ghost" data-action="edit" data-id="'+emp.id+'">Editar</button> ')+
             (currentUser && currentUser.role === "admin" ? '<button class="small ghost" data-action="move" data-id="'+emp.id+'">Mover de centro</button> ' : '')+
-            '<button class="small danger ghost" data-action="delete" data-id="'+emp.id+'">Eliminar</button>'+
+            (isViewerOperator() ? '' : '<button class="small danger ghost" data-action="delete" data-id="'+emp.id+'">Eliminar</button>')+
           '</td>'+
         '</tr>';
       if (selected){
@@ -1238,14 +1258,17 @@
                      '</div>'+
                    '</td></tr>';
           }
+          // Un operador "solo lectura" solo puede reimprimir un comprobante YA emitido; si el
+          // periodo todavía no tiene folio, no se le ofrece el botón (emitir uno es una escritura).
+          var showComprobanteBtn = !isViewerOperator() || !!p.comprobanteFolio;
           return '<tr><td>'+fmtDate(p.inicio)+' → '+fmtDate(p.fin)+
                    (periodoYearLabel[p.id] ? '<div class="note" style="margin:2px 0 0;">'+escapeHtml(periodoYearLabel[p.id])+'</div>' : '')+
                    (p.comprobanteFolio ? '<div class="note" style="margin:2px 0 0;">Comprobante N° '+escapeHtml(p.comprobanteFolio)+'</div>' : '')+
                  '</td><td class="num">'+dias+'</td><td>'+escapeHtml(p.nota||"")+'</td>'+
                  '<td style="white-space:nowrap;">'+
-                   '<button class="small ghost" data-action="emit-comprobante" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Comprobante</button> '+
+                   (showComprobanteBtn ? '<button class="small ghost" data-action="emit-comprobante" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Comprobante</button> ' : '')+
                    (canModifyDates ? '<button class="small ghost" data-action="edit-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Editar</button> ' : '')+
-                   '<button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button>'+
+                   (isViewerOperator() ? '' : '<button class="small ghost danger" data-action="del-periodo" data-emp="'+emp.id+'" data-periodo="'+p.id+'">Quitar</button>')+
                  '</td></tr>';
         }).join("")
       : '<tr><td colspan="4" class="note">Sin periodos registrados.</td></tr>';
@@ -1265,12 +1288,13 @@
             '<h3>Vacaciones tomadas</h3>'+
             '<table class="mini-table"><thead><tr><th>Rango</th><th class="num">Días hábiles</th><th>Nota</th><th></th></tr></thead>'+
             '<tbody>'+periodosRows+'</tbody></table>'+
-            '<div class="form-row" style="margin-top:10px;">'+
-              '<label class="field">Inicio<input type="date" id="periodoInicio_'+emp.id+'"></label>'+
-              '<label class="field">Fin<input type="date" id="periodoFin_'+emp.id+'"></label>'+
-              '<label class="field" style="flex:1;">Nota<input type="text" id="periodoNota_'+emp.id+'" placeholder="Opcional"></label>'+
-              '<button class="primary small" data-action="add-periodo" data-emp="'+emp.id+'">Agregar</button>'+
-            '</div>'+
+            (isViewerOperator() ? '' :
+              '<div class="form-row" style="margin-top:10px;">'+
+                '<label class="field">Inicio<input type="date" id="periodoInicio_'+emp.id+'"></label>'+
+                '<label class="field">Fin<input type="date" id="periodoFin_'+emp.id+'"></label>'+
+                '<label class="field" style="flex:1;">Nota<input type="text" id="periodoNota_'+emp.id+'" placeholder="Opcional"></label>'+
+                '<button class="primary small" data-action="add-periodo" data-emp="'+emp.id+'">Agregar</button>'+
+              '</div>')+
           '</div>'+
         '</div>'+
       '</div>'
@@ -1486,8 +1510,9 @@
       e.stopPropagation();
       var action = actionBtn.getAttribute("data-action");
       var employees = activeCenterEmployees();
-      if (action === "edit"){ openEmployeeModal(actionBtn.getAttribute("data-id")); return; }
+      if (action === "edit"){ if (isViewerOperator()) return; openEmployeeModal(actionBtn.getAttribute("data-id")); return; }
       if (action === "delete"){
+        if (isViewerOperator()) return;
         var id = actionBtn.getAttribute("data-id");
         var emp = employees.filter(function(x){ return x.id === id; })[0];
         if (emp && confirm('¿Eliminar a "'+emp.nombre+'"? Esta acción no se puede deshacer.')){
@@ -1502,6 +1527,7 @@
         return;
       }
       if (action === "add-periodo"){
+        if (isViewerOperator()) return;
         var empId = actionBtn.getAttribute("data-emp");
         var inicio = document.getElementById("periodoInicio_"+empId).value;
         var fin = document.getElementById("periodoFin_"+empId).value;
@@ -1520,6 +1546,7 @@
         return;
       }
       if (action === "del-periodo"){
+        if (isViewerOperator()) return;
         var empId2 = actionBtn.getAttribute("data-emp");
         var perId = actionBtn.getAttribute("data-periodo");
         var emp3 = employees.filter(function(x){ return x.id === empId2; })[0];
@@ -1530,11 +1557,13 @@
       }
       if (action === "emit-comprobante"){
         // Disponible para administradores y operadores por igual: re-emite (o emite por
-        // primera vez) el comprobante, reutilizando el mismo folio si ya fue asignado.
+        // primera vez) el comprobante, reutilizando el mismo folio si ya fue asignado. Un
+        // operador de solo lectura solo puede reimprimir uno YA emitido, nunca generar el primero.
         var empIdC = actionBtn.getAttribute("data-emp");
         var perIdC = actionBtn.getAttribute("data-periodo");
         var empC = employees.filter(function(x){ return x.id === empIdC; })[0];
         var perC = empC ? empC.periodos.filter(function(p){ return p.id === perIdC; })[0] : null;
+        if (isViewerOperator() && !(perC && perC.comprobanteFolio)) return;
         if (empC && perC) abrirComprobante(empC, perC, activeCenterKey());
         return;
       }
@@ -1588,9 +1617,10 @@
     document.getElementById("empAniosAnteriores").value = emp ? (emp.aniosServiciosAnteriores || 0) : 0;
     document.getElementById("empOverlay").hidden = false;
   }
-  document.getElementById("btnAddEmployee").addEventListener("click", function(){ openEmployeeModal(null); });
+  document.getElementById("btnAddEmployee").addEventListener("click", function(){ if (isViewerOperator()) return; openEmployeeModal(null); });
   document.getElementById("empCancel").addEventListener("click", function(){ document.getElementById("empOverlay").hidden = true; });
   document.getElementById("empSave").addEventListener("click", function(){
+    if (isViewerOperator()) return;
     var nombre = document.getElementById("empNombre").value.trim();
     var cargo = document.getElementById("empCargo").value.trim();
     var rut = document.getElementById("empRut").value.trim();
@@ -1733,7 +1763,7 @@
     if (currentUser.role === "admin"){
       CENTERS.forEach(function(c){ centers[c.key] = state.centers[c.key]; });
     } else {
-      centers[currentUser.centro] = state.centers[currentUser.centro];
+      (currentUser.centros || []).forEach(function(k){ centers[k] = state.centers[k]; });
     }
     return { centers: centers, customHolidays: state.customHolidays, disabledHolidays: state.disabledHolidays };
   }
@@ -1746,9 +1776,11 @@
     URL.revokeObjectURL(a.href);
   });
   document.getElementById("btnImportJson").addEventListener("click", function(){
+    if (currentUser && currentUser.role === "operator" && currentUser.viewer) return;
     document.getElementById("fileImport").click();
   });
   document.getElementById("fileImport").addEventListener("change", function(e){
+    if (currentUser && currentUser.role === "operator" && currentUser.viewer) return;
     var file = e.target.files[0];
     if (!file) return;
     var reader = new FileReader();
@@ -1757,7 +1789,9 @@
         var raw = JSON.parse(ev.target.result);
         var normalized = normalizeState(raw);
         if (currentUser.role === "operator"){
-          state.centers[currentUser.centro] = normalized.centers[currentUser.centro];
+          (currentUser.centros || []).forEach(function(k){
+            if (normalized.centers[k]) state.centers[k] = normalized.centers[k];
+          });
         } else {
           CENTERS.forEach(function(c){
             if (raw.centers && raw.centers[c.key]) state.centers[c.key] = normalized.centers[c.key];
@@ -1837,7 +1871,9 @@
       }
       var op = state.operators.filter(function(o){ return o.username.toLowerCase() === user.toLowerCase(); })[0];
       if (op && op.pinHash === hash){
-        currentUser = { role: "operator", id: op.id, username: op.username, centro: op.centro };
+        var opCentros = Array.isArray(op.centros) ? op.centros.slice() : [];
+        currentUser = { role: "operator", id: op.id, username: op.username, centros: opCentros, viewer: !!op.viewer };
+        uiOperatorActiveCenter = opCentros[0] || CENTERS[0].key;
         document.getElementById("loginUser").value = ""; document.getElementById("loginPin").value = "";
         renderApp();
         return;
@@ -1968,8 +2004,13 @@
     host.innerHTML = CENTERS.map(function(c){
       var ops = getOperatorsForCenter(c.key);
       var rows = ops.length ? ops.map(function(op){
+        var extra = [];
+        if (op.viewer) extra.push("Solo lectura");
+        var otherCentros = (op.centros||[]).filter(function(k){ return k !== c.key; }).map(centerLabel);
+        if (otherCentros.length) extra.push("también: " + otherCentros.join(", "));
+        var extraNote = extra.length ? '<div class="note" style="margin:2px 0 0;">'+escapeHtml(extra.join(" · "))+'</div>' : "";
         return '<div class="operator-row">'+
-          '<span class="op-row-user">'+escapeHtml(op.username)+'</span>'+
+          '<span class="op-row-user">'+escapeHtml(op.username)+extraNote+'</span>'+
           '<span class="op-row-actions">'+
             '<button class="small ghost" data-op-action="edit" data-op-id="'+op.id+'">Editar</button>'+
             '<button class="small ghost danger" data-op-action="remove" data-op-id="'+op.id+'">Quitar</button>'+
@@ -2022,11 +2063,12 @@
       openUserForm("operator", btn.getAttribute("data-centro"), null);
     } else if (action === "edit"){
       var opEdit = getOperatorById(btn.getAttribute("data-op-id"));
-      if (opEdit) openUserForm("operator", opEdit.centro, opEdit.id);
+      if (opEdit) openUserForm("operator", null, opEdit.id);
     } else if (action === "remove"){
       var opId = btn.getAttribute("data-op-id");
       var opRemove = getOperatorById(opId);
-      if (opRemove && confirm("¿Quitar el acceso del operador \""+opRemove.username+"\" de " + centerLabel(opRemove.centro) + "?")){
+      var opRemoveCentros = opRemove ? (opRemove.centros || []).map(centerLabel).join(", ") : "";
+      if (opRemove && confirm("¿Quitar el acceso del operador \""+opRemove.username+"\" de " + opRemoveCentros + "?")){
         state.operators = state.operators.filter(function(o){ return o.id !== opId; });
         persistState();
         renderOperatorsGrid();
@@ -2046,10 +2088,20 @@
     document.getElementById("operatorCentroField").hidden = isAdmin;
     document.getElementById("operatorSuperField").hidden = !isAdmin;
     document.getElementById("operatorEmailField").hidden = !isAdmin;
+    document.getElementById("operatorViewerField").hidden = isAdmin;
     document.getElementById("operatorFormTitle").textContent = isAdmin
       ? (existing ? "Editar administrador" : "Nuevo administrador")
-      : (existing ? "Editar operador — " : "Nuevo operador — ") + centerLabel(centro);
-    if (!isAdmin) document.getElementById("operatorCentroLabel").value = centerLabel(centro);
+      : (existing ? "Editar operador" : "Nuevo operador");
+    if (!isAdmin){
+      var existingCentros = existing ? (existing.centros || []) : (centro ? [centro] : []);
+      document.getElementById("operatorCentrosChecks").innerHTML = CENTERS.map(function(c){
+        var checked = existingCentros.indexOf(c.key) !== -1 ? " checked" : "";
+        return '<label style="display:flex;align-items:center;gap:6px;font-weight:400;">'+
+          '<input type="checkbox" class="op-centro-check" value="'+c.key+'"'+checked+'> '+escapeHtml(c.nombre)+
+        '</label>';
+      }).join("");
+      document.getElementById("operatorViewer").checked = existing ? !!existing.viewer : false;
+    }
     document.getElementById("operatorUser").value = existing ? existing.username : "";
     document.getElementById("operatorPin").value = "";
     document.getElementById("operatorPin2").value = "";
@@ -2082,6 +2134,11 @@
     if (isAdmin && email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
       errEl.textContent = "El correo ingresado no parece válido."; errEl.hidden = false; return;
     }
+    var selectedCentros = isAdmin ? [] : Array.from(document.querySelectorAll("#operatorCentrosChecks .op-centro-check:checked")).map(function(el){ return el.value; });
+    if (!isAdmin && selectedCentros.length === 0){
+      errEl.textContent = "Selecciona al menos un centro con acceso."; errEl.hidden = false; return;
+    }
+    var isViewer = !isAdmin && document.getElementById("operatorViewer").checked;
     var applyAndSave = function(hash){
       if (isAdmin){
         if (existing){
@@ -2095,9 +2152,11 @@
       } else {
         if (existing){
           existing.username = user;
+          existing.centros = selectedCentros;
+          existing.viewer = isViewer;
           if (hash) existing.pinHash = hash;
         } else {
-          state.operators.push({ id: uid(), centro: operatorFormCentro, username: user, pinHash: hash });
+          state.operators.push({ id: uid(), centros: selectedCentros, username: user, pinHash: hash, viewer: isViewer });
         }
       }
       document.getElementById("operatorFormOverlay").hidden = true;
@@ -2107,20 +2166,36 @@
     if (pin){ hashPin(pin).then(applyAndSave); } else { applyAndSave(null); }
   });
 
-  // ---------- Centro tabs (admin) ----------
+  // ---------- Centro tabs (admin, y operadores con acceso a más de un centro) ----------
   function renderCenterTabs(){
     var host = document.getElementById("centerTabs");
-    if (!currentUser || currentUser.role !== "admin"){ host.hidden = true; return; }
+    if (!currentUser){ host.hidden = true; return; }
+    var visible;
+    if (currentUser.role === "admin"){
+      visible = CENTERS;
+    } else {
+      var cs = currentUser.centros || [];
+      // Un operador con un solo centro asignado no necesita pestañas (comportamiento original).
+      if (cs.length <= 1){ host.hidden = true; return; }
+      visible = CENTERS.filter(function(c){ return cs.indexOf(c.key) !== -1; });
+    }
     host.hidden = false;
-    host.innerHTML = CENTERS.map(function(c){
-      return '<button class="center-tab'+(uiAdminActiveCenter===c.key?' active':'')+'" data-center="'+c.key+'">'+escapeHtml(c.nombre)+'</button>';
+    var active = activeCenterKey();
+    host.innerHTML = visible.map(function(c){
+      return '<button class="center-tab'+(active===c.key?' active':'')+'" data-center="'+c.key+'">'+escapeHtml(c.nombre)+'</button>';
     }).join("");
   }
   document.getElementById("centerTabs").addEventListener("click", function(e){
-    if (!currentUser || currentUser.role !== "admin") return;
+    if (!currentUser) return;
     var btn = e.target.closest("[data-center]");
     if (!btn) return;
-    uiAdminActiveCenter = btn.getAttribute("data-center");
+    var key = btn.getAttribute("data-center");
+    if (currentUser.role === "admin"){
+      uiAdminActiveCenter = key;
+    } else {
+      if ((currentUser.centros || []).indexOf(key) === -1) return; // no autorizado para ese centro
+      uiOperatorActiveCenter = key;
+    }
     uiSelectedEmployee = null;
     renderApp();
   });
@@ -2142,9 +2217,12 @@
       return;
     }
     showScreen("appContent");
-    document.getElementById("whoUser").textContent = currentUser.username + (currentUser.role === "operator" ? (" · " + centerLabel(currentUser.centro)) : "");
-    document.getElementById("whoRole").textContent = currentUser.role === "admin" ? (currentUser.superadmin ? "Super administrador" : "Administrador") : "Operador";
+    var isViewerNow = !!(currentUser.role === "operator" && currentUser.viewer);
+    document.getElementById("whoUser").textContent = currentUser.username + (currentUser.role === "operator" ? (" · " + centerLabel(activeCenterKey())) : "");
+    document.getElementById("whoRole").textContent = currentUser.role === "admin" ? (currentUser.superadmin ? "Super administrador" : "Administrador") : (isViewerNow ? "Operador (solo lectura)" : "Operador");
     document.getElementById("btnManageOperators").hidden = currentUser.role !== "admin";
+    document.getElementById("btnAddEmployee").hidden = isViewerNow;
+    document.getElementById("btnImportJson").hidden = isViewerNow;
     document.getElementById("refDateInput").value = uiRefDate;
     renderCenterTabs();
     renderStats();
