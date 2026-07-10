@@ -1591,21 +1591,29 @@
   }
 
   // ---------- Cartola de vacaciones (resumen individual para entregar al colaborador) ----------
+  var DIAS_BASE_ANUAL = 15; // base legal (art. 67° Código del Trabajo); el excedente es feriado progresivo (art. 68°)
   function abrirCartola(emp){
     var s = employeeSummary(emp);
     var bal = computeYearBalances(emp, s.acc);
     var rows = bal.completed.filter(function(r){ return r.pendiente > 0.05; });
     var showCurrent = bal.current.saldo > 0.05;
+    var rowHtml = function(year, ent, tomados, saldo, ventana, esActual){
+      var normales = Math.min(ent, DIAS_BASE_ANUAL);
+      var progresivos = Math.max(0, ent - DIAS_BASE_ANUAL);
+      return '<tr><td>Año '+year+(esActual?' (en curso)':'')+'<div style="font-size:11.5px;color:#666;">'+fmtDate(ventana.inicio)+' → '+fmtDate(ventana.fin)+'</div></td>'+
+        '<td class="num">'+normales+'</td>'+
+        '<td class="num">'+progresivos+'</td>'+
+        '<td class="num">'+fmt1(tomados)+'</td>'+
+        '<td class="num">'+fmt1(saldo)+(esActual?' *':'')+'</td></tr>';
+    };
     var rowsHtml = rows.map(function(r){
-      return '<tr><td>Año '+r.year+'<div style="font-size:11.5px;color:#666;">'+fmtDate(r.ventana.inicio)+' → '+fmtDate(r.ventana.fin)+'</div></td>'+
-        '<td class="num">'+r.ent+'</td><td class="num">'+fmt1(r.tomados)+'</td><td class="num">'+fmt1(r.pendiente)+'</td></tr>';
+      return rowHtml(r.year, r.ent, r.tomados, r.pendiente, r.ventana, false);
     }).join("");
     if (showCurrent){
-      rowsHtml += '<tr><td>Año '+bal.current.year+' (en curso)<div style="font-size:11.5px;color:#666;">'+fmtDate(bal.current.ventana.inicio)+' → '+fmtDate(bal.current.ventana.fin)+'</div></td>'+
-        '<td class="num">'+bal.current.ent+'</td><td class="num">'+fmt1(bal.current.tomados)+'</td><td class="num">'+fmt1(bal.current.saldo)+' *</td></tr>';
+      rowsHtml += rowHtml(bal.current.year, bal.current.ent, bal.current.tomados, bal.current.saldo, bal.current.ventana, true);
     }
     if (!rowsHtml){
-      rowsHtml = '<tr><td colspan="4" style="text-align:center;color:#888;">Sin saldo de vacaciones pendiente a la fecha.</td></tr>';
+      rowsHtml = '<tr><td colspan="5" style="text-align:center;color:#888;">Sin saldo de vacaciones pendiente a la fecha.</td></tr>';
     }
     var body =
       '<p class="subtitle">Corte al '+fmtDate(uiRefDate)+'</p>'+
@@ -1617,7 +1625,7 @@
         '<tr><th>Centro</th><td>'+escapeHtml(centerLabel(activeCenterKey()))+'</td></tr>'+
       '</table>'+
       '<table>'+
-        '<thead><tr><th>Periodo</th><th class="num">Días/año</th><th class="num">Tomados</th><th class="num">Saldo pendiente</th></tr></thead>'+
+        '<thead><tr><th>Periodo</th><th class="num">Días normales</th><th class="num">Días progresivos</th><th class="num">Tomados</th><th class="num">Saldo pendiente</th></tr></thead>'+
         '<tbody>'+rowsHtml+'</tbody>'+
       '</table>'+
       (showCurrent ? '<p style="font-size:11.5px;color:#666;">(*) año en curso: saldo pendiente calculado sobre los días devengados proporcionalmente a la fecha de corte, no sobre el total anual.</p>' : '');
@@ -1996,11 +2004,13 @@
     URL.revokeObjectURL(a.href);
   });
   document.getElementById("btnImportJson").addEventListener("click", function(){
-    if (currentUser && currentUser.role === "operator" && currentUser.viewer) return;
+    // Importar datos sobrescribe información: queda reservado exclusivamente a administradores,
+    // ningún operador (ni siquiera uno sin restricción de "solo lectura") puede usarlo.
+    if (!currentUser || currentUser.role !== "admin") return;
     document.getElementById("fileImport").click();
   });
   document.getElementById("fileImport").addEventListener("change", function(e){
-    if (currentUser && currentUser.role === "operator" && currentUser.viewer) return;
+    if (!currentUser || currentUser.role !== "admin") return;
     var file = e.target.files[0];
     if (!file) return;
     var reader = new FileReader();
@@ -2008,15 +2018,10 @@
       try {
         var raw = JSON.parse(ev.target.result);
         var normalized = normalizeState(raw);
-        if (currentUser.role === "operator"){
-          (currentUser.centros || []).forEach(function(k){
-            if (normalized.centers[k]) state.centers[k] = normalized.centers[k];
-          });
-        } else {
-          CENTERS.forEach(function(c){
-            if (raw.centers && raw.centers[c.key]) state.centers[c.key] = normalized.centers[c.key];
-          });
-        }
+        // Solo un administrador llega aquí (ver guardia arriba), así que se importan los 4 centros.
+        CENTERS.forEach(function(c){
+          if (raw.centers && raw.centers[c.key]) state.centers[c.key] = normalized.centers[c.key];
+        });
         if (raw.customHolidays) state.customHolidays = normalized.customHolidays;
         if (raw.disabledHolidays) state.disabledHolidays = normalized.disabledHolidays;
         onDataChanged();
@@ -2442,7 +2447,7 @@
     document.getElementById("whoRole").textContent = currentUser.role === "admin" ? (currentUser.superadmin ? "Super administrador" : "Administrador") : (isViewerNow ? "Operador (solo lectura)" : "Operador");
     document.getElementById("btnManageOperators").hidden = currentUser.role !== "admin";
     document.getElementById("btnAddEmployee").hidden = isViewerNow;
-    document.getElementById("btnImportJson").hidden = isViewerNow;
+    document.getElementById("btnImportJson").hidden = currentUser.role !== "admin"; // importar es exclusivo de administradores
     document.getElementById("refDateInput").value = uiRefDate;
     renderCenterTabs();
     renderStats();
