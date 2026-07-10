@@ -1539,7 +1539,6 @@
       '</div>'+
       '<div class="no-print"><button onclick="window.print()">Imprimir / Guardar como PDF</button></div>'+
       '<div class="footer">Preserva Ltda — Comprobante generado automáticamente por el sistema de Control de Vacaciones.</div>'+
-      '<script>window.onload = function(){ setTimeout(function(){ window.print(); }, 200); };<\/script>'+
       '</body></html>';
     win.document.open();
     win.document.write(html);
@@ -1577,7 +1576,6 @@
       bodyHtml+
       '<div class="no-print"><button onclick="window.print()">Imprimir / Guardar como PDF</button></div>'+
       '<div class="footer">Preserva Ltda — Documento generado automáticamente por el sistema de Control de Vacaciones.</div>'+
-      '<script>window.onload = function(){ setTimeout(function(){ window.print(); }, 200); };<\/script>'+
       '</body></html>';
   }
   function openPrintWindow(docTitle, tituloDocumento, bodyHtml){
