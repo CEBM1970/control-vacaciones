@@ -335,11 +335,13 @@
       <div class="who">Conectado como <strong id="whoUser"></strong><span class="role-pill" id="whoRole"></span></div>
       <div class="topbar-actions">
         <button class="ghost small" id="btnMyPin">Cambiar mi PIN</button>
+        <button class="ghost small" id="btnManageEmpresas" hidden>Gestionar empresas y centros</button>
         <button class="ghost small" id="btnManageOperators" hidden>Gestionar operadores</button>
         <button class="ghost small danger" id="btnLogout">Cerrar sesión</button>
       </div>
     </div>
 
+    <div class="center-tabs" id="empresaTabs" hidden style="margin-bottom:8px;"></div>
     <div class="center-tabs" id="centerTabs" hidden></div>
 
     <div class="toolbar">
@@ -429,6 +431,32 @@
     <div class="actions">
       <button class="ghost" id="moveCancel">Cancelar</button>
       <button class="primary" id="moveConfirm">Mover</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: gestión de empresas y centros de negocio (multiempresa del Holding) -->
+<div class="overlay" id="empresasOverlay" hidden>
+  <div class="modal" style="max-width:760px;">
+    <h2>Gestionar empresas y centros</h2>
+    <p class="note" style="margin:0 0 14px;">Cada centro de negocio pertenece a una empresa (razón social) del Holding. No se puede
+      eliminar una empresa que todavía tenga centros, ni un centro que todavía tenga colaboradores activos.</p>
+    <div id="empresasGrid"></div>
+    <div class="form-row" id="empresaAddRow" style="margin-top:16px;border-top:1px solid var(--gridline);padding-top:14px;">
+      <label class="field">Nueva empresa — Razón social
+        <input type="text" id="empresaNewNombre" placeholder="Ej: Preserva Comercial SpA">
+      </label>
+      <label class="field">Key (identificador único)
+        <input type="text" id="empresaNewKey" placeholder="Ej: preserva_comercial">
+      </label>
+      <label class="field">Logo (nombre de archivo, opcional)
+        <input type="text" id="empresaNewLogo" placeholder="Ej: logo_empresa.jpg">
+      </label>
+      <button class="primary small" id="empresaAdd" style="align-self:flex-end;">+ Agregar empresa</button>
+    </div>
+    <div class="auth-error" id="empresaFormError" hidden></div>
+    <div class="actions">
+      <button class="ghost" id="empresasClose">Cerrar</button>
     </div>
   </div>
 </div>
@@ -528,6 +556,9 @@
         <input type="checkbox" id="operatorSuperadmin" style="width:auto;">
         <span>Super administrador (puede gestionar otros administradores)</span>
       </label>
+      <label class="field" id="operatorEmpresasField" hidden>Empresas con acceso (ninguna marcada = Holding-wide, ve todas)
+        <div id="operatorEmpresasChecks" style="display:flex;flex-wrap:wrap;gap:10px 16px;padding:8px 2px;font-weight:400;"></div>
+      </label>
       <label class="field" id="operatorViewerField" hidden style="flex-direction:row;align-items:center;gap:8px;">
         <input type="checkbox" id="operatorViewer" style="width:auto;">
         <span>Solo lectura (puede ver la información e imprimir comprobantes ya emitidos, pero no puede agregar, editar ni eliminar nada)</span>
@@ -598,15 +629,28 @@
 (function(){
   "use strict";
 
-  // ---------- Centros de negocio ----------
-  var CENTERS = [
+  // ---------- Empresas y centros de negocio (modelo dinámico, multiempresa) ----------
+  // El Holding Preserva agrupa varias empresas (razones sociales); cada una tiene uno o más
+  // centros de negocio. Ambas listas son GESTIONABLES desde la UI ("Gestionar empresas y
+  // centros"), no están hardcodeadas. Se guardan en el estado sincronizado como:
+  //   state.empresas   -> [{ key, nombre, logoUrl }]        (razón social + logo de cada empresa)
+  //   state.centrosDef -> [{ key, nombre, empresaKey }]     (a qué empresa pertenece cada centro)
+  // Importante: esto es la DEFINICIÓN de qué empresas/centros existen. No confundir con
+  // `state.centers` (objeto keyed por centro con los DATOS operativos: empleados y folio
+  // correlativo), que sigue existiendo tal cual para no romper la lógica de negocio actual.
+  //
+  // La siguiente constante representa los 4 centros que la app ya tenía antes de esta
+  // funcionalidad; se usa solo para la migración automática (ver normalizeState) de datos
+  // guardados antes de multiempresa, que quedan bajo una empresa por defecto "Preserva Ltda".
+  var CENTROS_CLASICOS = [
     { key: "administracion", nombre: "Administración" },
     { key: "talca", nombre: "Talca" },
     { key: "los_angeles", nombre: "Los Ángeles" },
     { key: "aserradero", nombre: "Aserradero" }
   ];
+  var EMPRESA_POR_DEFECTO = { key: "preserva", nombre: "Preserva Ltda", logoUrl: "logo.png" };
   function centerLabel(key){
-    var c = CENTERS.filter(function(c){ return c.key === key; })[0];
+    var c = state.centrosDef.filter(function(c){ return c.key === key; })[0];
     return c ? c.nombre : key;
   }
 
@@ -673,12 +717,16 @@
 
   // ---------- Estado compartido (sincronizado) ----------
   function defaultState(){
+    var empresas = [{ key: EMPRESA_POR_DEFECTO.key, nombre: EMPRESA_POR_DEFECTO.nombre, logoUrl: EMPRESA_POR_DEFECTO.logoUrl }];
+    var centrosDef = CENTROS_CLASICOS.map(function(c){ return { key: c.key, nombre: c.nombre, empresaKey: EMPRESA_POR_DEFECTO.key }; });
     var centers = {};
-    CENTERS.forEach(function(c){ centers[c.key] = { nombre: c.nombre, employees: [], nextComprobanteFolio: 1 }; });
+    centrosDef.forEach(function(c){ centers[c.key] = { nombre: c.nombre, employees: [], nextComprobanteFolio: 1 }; });
     return {
       updatedAt: null,
       admins: [],
       operators: [],
+      empresas: empresas,
+      centrosDef: centrosDef,
       centers: centers,
       customHolidays: [],
       disabledHolidays: [],
@@ -688,8 +736,25 @@
   function normalizeState(raw){
     var base = defaultState();
     if (!raw || typeof raw !== "object") return base;
+
+    // Empresas: si el dato guardado es anterior a la funcionalidad multiempresa (no trae
+    // `empresas`), se crea automáticamente la empresa por defecto "Preserva Ltda", para que los
+    // datos ya sincronizados en Google Drive por el usuario real sigan funcionando sin pérdidas.
+    var empresas = (Array.isArray(raw.empresas) && raw.empresas.length)
+      ? raw.empresas.filter(function(e){ return e && e.key && e.nombre; }).map(function(e){
+          return { key: e.key, nombre: e.nombre, logoUrl: e.logoUrl || "" };
+        })
+      : base.empresas;
+
+    // Centros: mismo criterio — si no existe `centrosDef` todavía, se migran los 4 centros
+    // clásicos bajo la empresa por defecto, conservando exactamente las mismas keys de siempre
+    // (para no perder la asociación con `state.centers[key].employees` ya sincronizada).
+    var centrosDef = (Array.isArray(raw.centrosDef) && raw.centrosDef.length)
+      ? raw.centrosDef.filter(function(c){ return c && c.key && c.nombre && c.empresaKey; })
+      : base.centrosDef;
+
     var centers = {};
-    CENTERS.forEach(function(c){
+    centrosDef.forEach(function(c){
       var existing = raw.centers && raw.centers[c.key];
       centers[c.key] = {
         nombre: c.nombre,
@@ -700,11 +765,16 @@
     var admins;
     if (Array.isArray(raw.admins)){
       admins = raw.admins.filter(function(a){ return a && a.username; }).map(function(a){
-        return { id: a.id || uid(), username: a.username, pinHash: a.pinHash, superadmin: !!a.superadmin, email: a.email || "" };
+        return {
+          id: a.id || uid(), username: a.username, pinHash: a.pinHash, superadmin: !!a.superadmin, email: a.email || "",
+          // Administrador "Holding-wide" (ve/gestiona todas las empresas) si este campo está
+          // vacío o ausente; si trae valores, queda restringido solo a esas empresas.
+          empresas: Array.isArray(a.empresas) ? a.empresas.filter(function(k){ return empresas.some(function(e){ return e.key === k; }); }) : []
+        };
       });
     } else if (raw.admin && raw.admin.username){
-      // Formato antiguo (un solo administrador): se migra como super administrador único.
-      admins = [{ id: uid(), username: raw.admin.username, pinHash: raw.admin.pinHash, superadmin: true, email: raw.admin.email || "" }];
+      // Formato antiguo (un solo administrador): se migra como super administrador único, Holding-wide.
+      admins = [{ id: uid(), username: raw.admin.username, pinHash: raw.admin.pinHash, superadmin: true, email: raw.admin.email || "", empresas: [] }];
     } else {
       admins = [];
     }
@@ -715,10 +785,12 @@
         // "centros" reemplaza al antiguo campo "centro" (un solo centro) para permitir operadores
         // con acceso a más de un centro de negocio; se migra automáticamente el formato antiguo.
         var centros = Array.isArray(o.centros)
-          ? o.centros.filter(function(k){ return CENTERS.some(function(c){ return c.key === k; }); })
+          ? o.centros.filter(function(k){ return centrosDef.some(function(c){ return c.key === k; }); })
           : (o.centro ? [o.centro] : []);
         return { id: o.id || uid(), centros: centros, username: o.username, pinHash: o.pinHash, viewer: !!o.viewer };
       }) : [],
+      empresas: empresas,
+      centrosDef: centrosDef,
       centers: centers,
       customHolidays: Array.isArray(raw.customHolidays) ? raw.customHolidays : [],
       disabledHolidays: Array.isArray(raw.disabledHolidays) ? raw.disabledHolidays : [],
@@ -730,9 +802,10 @@
   }
 
   var state = defaultState();
-  var currentUser = null;           // { role: 'admin'|'operator', username, centros?, viewer? }
-  var uiAdminActiveCenter = CENTERS[0].key;
+  var currentUser = null;           // { role: 'admin'|'operator', username, centros?, viewer?, empresas? }
+  var uiAdminActiveCenter = state.centrosDef[0] ? state.centrosDef[0].key : null;
   var uiOperatorActiveCenter = null; // centro activo entre los asignados a un operador multi-centro
+  var uiActiveEmpresa = null;        // key de la empresa activa en los tabs superiores (solo si el usuario ve más de una)
   var uiSelectedEmployee = null;
   var uiEditingEmployeeId = null;
   var uiEditingPeriodo = null;      // { empId, periodoId } - edición de fechas de un periodo (solo admin/superadmin)
@@ -768,6 +841,55 @@
     return state.operators.filter(function(o){ return o.id === id; })[0] || null;
   }
 
+  // ---------- Helpers multiempresa: qué ve/gestiona cada usuario conectado ----------
+  // Un administrador sin el campo `empresas` (o con un array vacío) es "Holding-wide": ve y
+  // gestiona TODAS las empresas y centros del Holding. Si trae valores, queda restringido solo
+  // a esas empresas (y a los centros que pertenecen a ellas).
+  function isHoldingWide(user){
+    return !!(user && user.role === "admin" && (!user.empresas || !user.empresas.length));
+  }
+  // Empresas visibles para el usuario actualmente conectado.
+  function empresasVisibles(){
+    if (!currentUser) return [];
+    if (currentUser.role === "admin"){
+      if (isHoldingWide(currentUser)) return state.empresas.slice();
+      var permitidas = currentUser.empresas || [];
+      return state.empresas.filter(function(e){ return permitidas.indexOf(e.key) !== -1; });
+    }
+    // Operador: las empresas a las que pertenecen sus centros asignados.
+    var keys = {};
+    (currentUser.centros || []).forEach(function(ck){
+      var ek = empresaDeCentro(ck);
+      if (ek) keys[ek] = true;
+    });
+    return state.empresas.filter(function(e){ return keys[e.key]; });
+  }
+  // Centros de negocio visibles para el usuario actualmente conectado (dentro de sus empresas
+  // visibles si es administrador, o los centros concretos asignados si es operador).
+  function centrosVisibles(){
+    if (!currentUser) return [];
+    if (currentUser.role === "admin"){
+      if (isHoldingWide(currentUser)) return state.centrosDef.slice();
+      var empKeys = currentUser.empresas || [];
+      return state.centrosDef.filter(function(c){ return empKeys.indexOf(c.empresaKey) !== -1; });
+    }
+    var cs = currentUser.centros || [];
+    return state.centrosDef.filter(function(c){ return cs.indexOf(c.key) !== -1; });
+  }
+  // Key de la empresa a la que pertenece un centro (o null si el centro no existe).
+  function empresaDeCentro(centroKey){
+    var c = state.centrosDef.filter(function(x){ return x.key === centroKey; })[0];
+    return c ? c.empresaKey : null;
+  }
+  function empresaLabel(key){
+    var e = state.empresas.filter(function(x){ return x.key === key; })[0];
+    return e ? e.nombre : key;
+  }
+  function logoUrlDeEmpresa(key){
+    var e = state.empresas.filter(function(x){ return x.key === key; })[0];
+    return e ? (e.logoUrl || "") : "";
+  }
+
   // ---------- Persistencia local (IndexedDB) + sincronización vía Google Drive ----------
   // El archivo compartido vive en una Unidad compartida de Google Drive; cada computador se
   // conecta con la cuenta de Google (@preserva.cl) de quien lo configure, vía Google Identity
@@ -793,7 +915,7 @@
   // sobrescriben con la copia local al fusionar; el resto siempre toma la versión más reciente
   // del remoto, para no pisar cambios de otro administrador con una copia local desactualizada
   // (por ejemplo, la URL del script de aviso por correo desapareciendo tras sincronizar).
-  var localDirty = { admins: false, operators: false, settings: false, customHolidays: false, disabledHolidays: false };
+  var localDirty = { admins: false, operators: false, settings: false, customHolidays: false, disabledHolidays: false, empresas: false, centrosDef: false };
   var IDB_NAME = "control_vacaciones_db", IDB_STORE = "kv";
   var SYNC_FILENAME = "control_vacaciones_sync.json";
 
@@ -860,6 +982,16 @@
       if (localDirty.customHolidays) mergedBase.customHolidays = state.customHolidays;
       if (localDirty.disabledHolidays) mergedBase.disabledHolidays = state.disabledHolidays;
       if (localDirty.settings) mergedBase.settings = state.settings;
+      if (localDirty.empresas) mergedBase.empresas = state.empresas;
+      if (localDirty.centrosDef){
+        mergedBase.centrosDef = state.centrosDef;
+        // Si este dispositivo creó/eliminó centros localmente, el remoto (todavía desactualizado)
+        // puede no traer la entrada de datos (empleados/folio) para un centro nuevo: se completa
+        // con la copia local para no perder la referencia recién creada.
+        mergedBase.centrosDef.forEach(function(c){
+          if (!mergedBase.centers[c.key]) mergedBase.centers[c.key] = state.centers[c.key] || { nombre: c.nombre, employees: [], nextComprobanteFolio: 1 };
+        });
+      }
     } else {
       // Sin sesión (asistente de configuración inicial): usar el estado local completo.
       return normalizeState(state);
@@ -932,7 +1064,7 @@
     // Instantánea de qué secciones locales están "sucias" en este momento: si la escritura
     // tiene éxito, solo se limpian estas (una edición nueva que llegue mientras el archivo se
     // escribe no debe darse por sincronizada todavía).
-    var dirtySnapshot = { admins: localDirty.admins, operators: localDirty.operators, settings: localDirty.settings, customHolidays: localDirty.customHolidays, disabledHolidays: localDirty.disabledHolidays };
+    var dirtySnapshot = { admins: localDirty.admins, operators: localDirty.operators, settings: localDirty.settings, customHolidays: localDirty.customHolidays, disabledHolidays: localDirty.disabledHolidays, empresas: localDirty.empresas, centrosDef: localDirty.centrosDef };
     return readSyncFile().then(function(text){
       var remoteRaw = null;
       if (text){ try { remoteRaw = JSON.parse(text); } catch(e){ remoteRaw = null; } }
@@ -1189,7 +1321,7 @@
     if (currentUser && currentUser.role === "operator"){
       var cs = currentUser.centros || [];
       if (uiOperatorActiveCenter && cs.indexOf(uiOperatorActiveCenter) !== -1) return uiOperatorActiveCenter;
-      return cs[0] || CENTERS[0].key;
+      return cs[0] || (state.centrosDef[0] && state.centrosDef[0].key) || null;
     }
     return uiAdminActiveCenter;
   }
@@ -1579,6 +1711,16 @@
     }
     return periodo.comprobanteFolio;
   }
+  // Encabezado (logo + razón social) para los documentos imprimibles, según la empresa dueña
+  // del centro correspondiente. Si `empresaKey` es null (por ejemplo, un informe que abarca
+  // centros de MÁS de una empresa a la vez), se usa un nombre genérico del Holding y sin logo
+  // de una empresa específica, para no confundir a quien lo reciba.
+  function encabezadoEmpresa(empresaKey){
+    var nombre = empresaKey ? empresaLabel(empresaKey) : "Holding Preserva";
+    var logo = empresaKey ? logoUrlDeEmpresa(empresaKey) : "";
+    var logoHtml = logo ? '<img src="'+escapeHtml(logo)+'" alt="'+escapeHtml(nombre)+'" onerror="this.style.display=\'none\'">' : "";
+    return { nombre: nombre, logoHtml: logoHtml };
+  }
   function abrirComprobante(emp, periodo, centroKey){
     var folio = assignComprobanteFolio(emp, periodo, centroKey);
     var dias = countBusinessDays(periodo.inicio, periodo.fin);
@@ -1589,6 +1731,7 @@
       return;
     }
     var emitidoStr = fmtDate(todayISO());
+    var empresa = encabezadoEmpresa(empresaDeCentro(centroKey));
     var html = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'+
       '<title>Comprobante de Vacaciones - '+escapeHtml(folio)+'</title>'+
       '<style>'+
@@ -1611,8 +1754,8 @@
         '@media print{.no-print{display:none;}body{margin:0;padding:0 12px;}}'+
       '</style></head><body>'+
       '<div class="header">'+
-        '<img src="logo.png" alt="Preserva" onerror="this.style.display=\'none\'">'+
-        '<div><h1>Preserva Ltda</h1><p>Control de Vacaciones del Personal</p></div>'+
+        empresa.logoHtml+
+        '<div><h1>'+escapeHtml(empresa.nombre)+'</h1><p>Control de Vacaciones del Personal</p></div>'+
       '</div>'+
       '<h2>Comprobante de Vacaciones</h2>'+
       '<p class="folio">Folio N° '+escapeHtml(folio)+' &nbsp;·&nbsp; Emitido el '+emitidoStr+'</p>'+
@@ -1635,7 +1778,7 @@
         '<div class="firma">Firma empleador / representante</div>'+
       '</div>'+
       '<div class="no-print"><button onclick="window.print()">Imprimir / Guardar como PDF</button></div>'+
-      '<div class="footer">Preserva Ltda — Comprobante generado automáticamente por el sistema de Control de Vacaciones.</div>'+
+      '<div class="footer">'+escapeHtml(empresa.nombre)+' — Comprobante generado automáticamente por el sistema de Control de Vacaciones.</div>'+
       '</body></html>';
     win.document.open();
     win.document.write(html);
@@ -1645,7 +1788,11 @@
   // ---------- Envoltorio común para otros documentos imprimibles (cartola, informes) ----------
   // A diferencia del comprobante (que tiene su propio formato con folio legal), estos son
   // documentos informativos de solo lectura: no asignan folio ni modifican el estado.
-  function printableWindowHtml(docTitle, tituloDocumento, bodyHtml){
+  // `empresaKey`: empresa dueña del documento (logo + razón social en el encabezado). Si es null
+  // (por ejemplo, un informe mensual que abarca centros de más de una empresa), se muestra el
+  // nombre genérico "Holding Preserva" sin logo de una empresa en particular.
+  function printableWindowHtml(docTitle, tituloDocumento, bodyHtml, empresaKey){
+    var empresa = encabezadoEmpresa(empresaKey);
     return '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'+
       '<title>'+escapeHtml(docTitle)+'</title>'+
       '<style>'+
@@ -1666,23 +1813,23 @@
         '@media print{.no-print{display:none;}body{margin:0;padding:0 12px;}}'+
       '</style></head><body>'+
       '<div class="header">'+
-        '<img src="logo.png" alt="Preserva" onerror="this.style.display=\'none\'">'+
-        '<div><h1>Preserva Ltda</h1><p>Control de Vacaciones del Personal</p></div>'+
+        empresa.logoHtml+
+        '<div><h1>'+escapeHtml(empresa.nombre)+'</h1><p>Control de Vacaciones del Personal</p></div>'+
       '</div>'+
       '<h2>'+escapeHtml(tituloDocumento)+'</h2>'+
       bodyHtml+
       '<div class="no-print"><button onclick="window.print()">Imprimir / Guardar como PDF</button></div>'+
-      '<div class="footer">Preserva Ltda — Documento generado automáticamente por el sistema de Control de Vacaciones.</div>'+
+      '<div class="footer">'+escapeHtml(empresa.nombre)+' — Documento generado automáticamente por el sistema de Control de Vacaciones.</div>'+
       '</body></html>';
   }
-  function openPrintWindow(docTitle, tituloDocumento, bodyHtml){
+  function openPrintWindow(docTitle, tituloDocumento, bodyHtml, empresaKey){
     var win = window.open("", "_blank");
     if (!win){
       alert("El navegador bloqueó la ventana emergente. Habilita las ventanas emergentes para este sitio e intenta nuevamente.");
       return null;
     }
     win.document.open();
-    win.document.write(printableWindowHtml(docTitle, tituloDocumento, bodyHtml));
+    win.document.write(printableWindowHtml(docTitle, tituloDocumento, bodyHtml, empresaKey));
     win.document.close();
     return win;
   }
@@ -1726,7 +1873,8 @@
         '<tbody>'+rowsHtml+'</tbody>'+
       '</table>'+
       (showCurrent ? '<p style="font-size:11.5px;color:#666;">(*) año en curso: saldo pendiente calculado sobre los días devengados proporcionalmente a la fecha de corte, no sobre el total anual.</p>' : '');
-    openPrintWindow('Cartola de Vacaciones - '+emp.nombre, 'Cartola de Vacaciones', body);
+    // Una cartola es siempre de UN colaborador de UN solo centro, así que la empresa es inequívoca.
+    openPrintWindow('Cartola de Vacaciones - '+emp.nombre, 'Cartola de Vacaciones', body, empresaDeCentro(activeCenterKey()));
   }
 
   // ---------- Informe mensual de vacaciones tomadas (conciliación con nómina/asistencia) ----------
@@ -1801,13 +1949,20 @@
         '<tbody>'+tableRows+'</tbody>'+
         (rows.length ? '<tfoot><tr><td colspan="'+(showCentroCol?5:4)+'" style="text-align:right;font-weight:700;">Total días hábiles en el mes</td><td class="num" style="font-weight:700;">'+totalDias+'</td><td></td></tr></tfoot>' : '')+
       '</table>';
-    openPrintWindow('Informe de Vacaciones - '+mesLabel, 'Informe de Vacaciones Tomadas — '+mesLabel, body);
+    // Si el informe abarca centros de UNA sola empresa, se usa su logo/razón social; si abarca
+    // centros de MÁS de una empresa a la vez (informe Holding-wide), se usa el nombre genérico
+    // del Holding sin logo de una empresa en particular (ver encabezadoEmpresa/empresaKey=null).
+    var empresaKeysEnScope = {};
+    centrosScope.forEach(function(k){ var ek = empresaDeCentro(k); if (ek) empresaKeysEnScope[ek] = true; });
+    var empresaKeysArr = Object.keys(empresaKeysEnScope);
+    var reportEmpresaKey = empresaKeysArr.length === 1 ? empresaKeysArr[0] : null;
+    openPrintWindow('Informe de Vacaciones - '+mesLabel, 'Informe de Vacaciones Tomadas — '+mesLabel, body, reportEmpresaKey);
   }
   document.getElementById("btnMonthlyReport").addEventListener("click", function(){
     document.getElementById("monthlyReportMonth").value = todayISO().slice(0,7);
     var isAdmin = currentUser && currentUser.role === "admin";
     document.getElementById("monthlyReportScopeNote").textContent = isAdmin
-      ? "Se incluirán todos los centros de negocio."
+      ? "Se incluirán todos los centros de negocio visibles para tu cuenta."
       : ("Se incluirá el centro: " + centerLabel(activeCenterKey()) + ".");
     document.getElementById("monthlyReportOverlay").hidden = false;
   });
@@ -1817,7 +1972,7 @@
   document.getElementById("monthlyReportGenerate").addEventListener("click", function(){
     var mesStr = document.getElementById("monthlyReportMonth").value || todayISO().slice(0,7);
     var isAdmin = currentUser && currentUser.role === "admin";
-    var scope = isAdmin ? CENTERS.map(function(c){ return c.key; }) : [activeCenterKey()];
+    var scope = isAdmin ? centrosVisibles().map(function(c){ return c.key; }) : [activeCenterKey()];
     document.getElementById("monthlyReportOverlay").hidden = true;
     abrirInformeMensual(mesStr, scope);
   });
@@ -1979,7 +2134,10 @@
     document.getElementById("moveEmpNombre").textContent = emp.nombre;
     document.getElementById("moveEmpOrigen").textContent = centerLabel(origen);
     var sel = document.getElementById("moveTargetCentro");
-    sel.innerHTML = CENTERS.filter(function(c){ return c.key !== origen; }).map(function(c){
+    // Mover de centro solo puede hacerse DENTRO de la misma empresa: cambiar de empresa implicaría
+    // un cambio de empleador legal, fuera de alcance de esta función (ver openMoveModal).
+    var origenEmpresaKey = empresaDeCentro(origen);
+    sel.innerHTML = state.centrosDef.filter(function(c){ return c.key !== origen && c.empresaKey === origenEmpresaKey; }).map(function(c){
       return '<option value="'+c.key+'">'+escapeHtml(c.nombre)+'</option>';
     }).join("");
     document.getElementById("moveError").hidden = true;
@@ -2092,12 +2250,10 @@
 
   // ---------- Import / Export (datos operativos, sin credenciales) ----------
   function exportPayload(){
+    // Tanto para administradores (Holding-wide o restringidos a algunas empresas) como para
+    // operadores, `centrosVisibles()` ya resuelve exactamente qué centros les corresponde ver.
     var centers = {};
-    if (currentUser.role === "admin"){
-      CENTERS.forEach(function(c){ centers[c.key] = state.centers[c.key]; });
-    } else {
-      (currentUser.centros || []).forEach(function(k){ centers[k] = state.centers[k]; });
-    }
+    centrosVisibles().forEach(function(c){ centers[c.key] = state.centers[c.key]; });
     return { centers: centers, customHolidays: state.customHolidays, disabledHolidays: state.disabledHolidays };
   }
   document.getElementById("btnExportJson").addEventListener("click", function(){
@@ -2123,9 +2279,23 @@
       try {
         var raw = JSON.parse(ev.target.result);
         var normalized = normalizeState(raw);
-        // Solo un administrador llega aquí (ver guardia arriba), así que se importan los 4 centros.
-        CENTERS.forEach(function(c){
-          if (raw.centers && raw.centers[c.key]) state.centers[c.key] = normalized.centers[c.key];
+        // Solo un administrador llega aquí (ver guardia arriba); se limita a los centros que ese
+        // administrador puede ver (todos si es Holding-wide, o solo los de sus empresas si está
+        // restringido). Ojo: `exportPayload()` no incluye `centrosDef` (solo exporta datos de
+        // colaboradores), así que no puede usarse `normalized.centers` tal cual — su `centrosDef`
+        // por defecto podría no incluir centros nuevos creados después de la migración clásica.
+        // Se normaliza cada centro visible directamente contra `raw.centers[key]`.
+        centrosVisibles().forEach(function(c){
+          var incoming = raw.centers && raw.centers[c.key];
+          if (incoming && Array.isArray(incoming.employees)){
+            state.centers[c.key] = {
+              nombre: c.nombre,
+              employees: incoming.employees,
+              nextComprobanteFolio: (typeof incoming.nextComprobanteFolio === "number")
+                ? incoming.nextComprobanteFolio
+                : ((state.centers[c.key] && state.centers[c.key].nextComprobanteFolio) || 1)
+            };
+          }
         });
         if (raw.customHolidays){ state.customHolidays = normalized.customHolidays; localDirty.customHolidays = true; }
         if (raw.disabledHolidays){ state.disabledHolidays = normalized.disabledHolidays; localDirty.disabledHolidays = true; }
@@ -2172,9 +2342,12 @@
     if (!user || pin.length < 4){ errEl.textContent = "Ingresa un usuario y un PIN de al menos 4 caracteres."; errEl.hidden = false; return; }
     if (pin !== pin2){ errEl.textContent = "El PIN y su confirmación no coinciden."; errEl.hidden = false; return; }
     hashPin(pin).then(function(hash){
-      var adm = { id: uid(), username: user, pinHash: hash, superadmin: true };
+      // El administrador de la configuración inicial queda "Holding-wide" (sin campo `empresas`,
+      // o array vacío): ve y gestiona todas las empresas y centros del Holding.
+      var adm = { id: uid(), username: user, pinHash: hash, superadmin: true, empresas: [] };
       state.admins = [adm];
-      currentUser = { role: "admin", id: adm.id, username: user, superadmin: true };
+      currentUser = { role: "admin", id: adm.id, username: user, superadmin: true, empresas: [] };
+      uiActiveEmpresa = null;
       localDirty.admins = true;
       persistState();
       renderApp();
@@ -2194,8 +2367,10 @@
     hashPin(pin).then(function(hash){
       var adm = state.admins.filter(function(a){ return a.username.toLowerCase() === user.toLowerCase(); })[0];
       if (adm && adm.pinHash === hash){
-        currentUser = { role: "admin", id: adm.id, username: adm.username, superadmin: !!adm.superadmin };
-        uiAdminActiveCenter = CENTERS[0].key;
+        currentUser = { role: "admin", id: adm.id, username: adm.username, superadmin: !!adm.superadmin, empresas: adm.empresas || [] };
+        uiActiveEmpresa = null;
+        var visiblesLogin = centrosVisibles();
+        uiAdminActiveCenter = (visiblesLogin[0] && visiblesLogin[0].key) || null;
         document.getElementById("loginUser").value = ""; document.getElementById("loginPin").value = "";
         renderApp();
         return;
@@ -2204,7 +2379,8 @@
       if (op && op.pinHash === hash){
         var opCentros = Array.isArray(op.centros) ? op.centros.slice() : [];
         currentUser = { role: "operator", id: op.id, username: op.username, centros: opCentros, viewer: !!op.viewer };
-        uiOperatorActiveCenter = opCentros[0] || CENTERS[0].key;
+        uiActiveEmpresa = null;
+        uiOperatorActiveCenter = opCentros[0] || null;
         document.getElementById("loginUser").value = ""; document.getElementById("loginPin").value = "";
         renderApp();
         return;
@@ -2217,6 +2393,7 @@
     currentUser = null;
     uiSelectedEmployee = null;
     uiEditingPeriodo = null;
+    uiActiveEmpresa = null;
     renderApp();
   });
 
@@ -2247,6 +2424,174 @@
     });
   });
 
+  // ---------- Gestión de empresas y centros de negocio (multiempresa del Holding) ----------
+  document.getElementById("btnManageEmpresas").addEventListener("click", function(){
+    if (!currentUser || currentUser.role !== "admin") return;
+    document.getElementById("empresasOverlay").hidden = false;
+    renderEmpresasGrid();
+  });
+  document.getElementById("empresasClose").addEventListener("click", function(){
+    document.getElementById("empresasOverlay").hidden = true;
+    renderApp();
+  });
+  function renderEmpresasGrid(){
+    var host = document.getElementById("empresasGrid");
+    var empresas = empresasVisibles();
+    // Crear (o eliminar) una empresa es una acción a nivel Holding: solo un admin Holding-wide
+    // puede hacerlo. Crear un CENTRO dentro de una empresa ya visible, o editar su nombre/logo,
+    // sí lo puede hacer cualquier admin que vea esa empresa.
+    var holdingWide = isHoldingWide(currentUser);
+    document.getElementById("empresaAddRow").style.display = holdingWide ? "flex" : "none";
+    host.innerHTML = empresas.map(function(emp){
+      var centros = state.centrosDef.filter(function(c){ return c.empresaKey === emp.key; });
+      var centrosRows = centros.length ? centros.map(function(c){
+        var count = (state.centers[c.key] && state.centers[c.key].employees.length) || 0;
+        return '<div class="operator-row">'+
+          '<span class="op-row-user">'+
+            '<input type="text" class="centro-edit-nombre" data-centro="'+c.key+'" value="'+escapeHtml(c.nombre)+'" style="font:inherit;font-weight:600;border:1px solid var(--border);border-radius:6px;padding:3px 8px;">'+
+            '<div class="note" style="margin:2px 0 0;font-weight:400;">'+count+' colaborador(es) · key: '+escapeHtml(c.key)+'</div>'+
+          '</span>'+
+          '<span class="op-row-actions">'+
+            '<button class="small ghost" data-centro-action="save" data-centro="'+c.key+'">Guardar</button>'+
+            '<button class="small ghost danger" data-centro-action="remove" data-centro="'+c.key+'">Eliminar</button>'+
+          '</span>'+
+        '</div>';
+      }).join("") : '<div class="op-user">Sin centros todavía</div>';
+      return '<div class="operator-card" style="margin-bottom:16px;">'+
+        '<div class="form-row">'+
+          '<label class="field" style="flex:1;min-width:180px;">Razón social'+
+            '<input type="text" class="empresa-edit-nombre" data-empresa="'+emp.key+'" value="'+escapeHtml(emp.nombre)+'">'+
+          '</label>'+
+          '<label class="field" style="flex:1;min-width:180px;">Logo (nombre de archivo)'+
+            '<input type="text" class="empresa-edit-logo" data-empresa="'+emp.key+'" value="'+escapeHtml(emp.logoUrl||"")+'" placeholder="Ej: logo.png">'+
+          '</label>'+
+          '<button class="small ghost" data-empresa-action="save" data-empresa="'+emp.key+'" style="align-self:flex-end;">Guardar</button>'+
+          (holdingWide ? '<button class="small ghost danger" data-empresa-action="remove" data-empresa="'+emp.key+'" style="align-self:flex-end;">Eliminar empresa</button>' : '')+
+        '</div>'+
+        '<p class="note" style="margin:4px 0 8px;">key: '+escapeHtml(emp.key)+'</p>'+
+        '<div class="op-list">'+centrosRows+'</div>'+
+        '<div class="form-row" style="margin-top:8px;">'+
+          '<label class="field">Nuevo centro — Nombre'+
+            '<input type="text" class="centro-new-nombre" data-empresa="'+emp.key+'" placeholder="Ej: Bodega Norte">'+
+          '</label>'+
+          '<label class="field">Key'+
+            '<input type="text" class="centro-new-key" data-empresa="'+emp.key+'" placeholder="Ej: bodega_norte">'+
+          '</label>'+
+          '<button class="small primary" data-centro-action="add" data-empresa="'+emp.key+'" style="align-self:flex-end;">+ Agregar centro</button>'+
+        '</div>'+
+      '</div>';
+    }).join("");
+  }
+  document.getElementById("empresasGrid").addEventListener("click", function(e){
+    if (!currentUser || currentUser.role !== "admin") return;
+    var errEl = document.getElementById("empresaFormError");
+    errEl.hidden = true;
+    var empBtn = e.target.closest("[data-empresa-action]");
+    if (empBtn){
+      var eAction = empBtn.getAttribute("data-empresa-action");
+      var eKey = empBtn.getAttribute("data-empresa");
+      if (eAction === "save"){
+        // Editar nombre/logo de una empresa ya visible lo puede hacer cualquier admin que la vea.
+        var nombreInput = document.querySelector('.empresa-edit-nombre[data-empresa="'+eKey+'"]');
+        var logoInput = document.querySelector('.empresa-edit-logo[data-empresa="'+eKey+'"]');
+        var nuevoNombreEmp = nombreInput.value.trim();
+        if (!nuevoNombreEmp){ errEl.textContent = "La razón social no puede quedar vacía."; errEl.hidden = false; return; }
+        var empObj = state.empresas.filter(function(x){ return x.key === eKey; })[0];
+        if (empObj){ empObj.nombre = nuevoNombreEmp; empObj.logoUrl = logoInput.value.trim(); }
+        localDirty.empresas = true;
+        persistState();
+        renderEmpresasGrid();
+        renderApp();
+      } else if (eAction === "remove"){
+        if (!isHoldingWide(currentUser)) return; // eliminar una empresa es una acción a nivel Holding
+        var tieneCentros = state.centrosDef.some(function(c){ return c.empresaKey === eKey; });
+        if (tieneCentros){
+          errEl.textContent = "No puedes eliminar una empresa que todavía tiene centros de negocio. Elimina o reasigna sus centros primero.";
+          errEl.hidden = false;
+          return;
+        }
+        if (confirm('¿Eliminar la empresa "'+empresaLabel(eKey)+'"? Esta acción no se puede deshacer.')){
+          state.empresas = state.empresas.filter(function(x){ return x.key !== eKey; });
+          // Se limpia también de cualquier admin restringido a esa empresa, para no dejar referencias colgantes.
+          state.admins.forEach(function(a){ if (Array.isArray(a.empresas)) a.empresas = a.empresas.filter(function(k){ return k !== eKey; }); });
+          localDirty.empresas = true;
+          localDirty.admins = true;
+          persistState();
+          renderEmpresasGrid();
+          renderApp();
+        }
+      }
+      return;
+    }
+    var centroBtn = e.target.closest("[data-centro-action]");
+    if (!centroBtn) return;
+    var cAction = centroBtn.getAttribute("data-centro-action");
+    if (cAction === "add"){
+      var empKeyForNew = centroBtn.getAttribute("data-empresa");
+      var nombreI = document.querySelector('.centro-new-nombre[data-empresa="'+empKeyForNew+'"]');
+      var keyI = document.querySelector('.centro-new-key[data-empresa="'+empKeyForNew+'"]');
+      var cNombre = nombreI.value.trim();
+      var cKeyRaw = keyI.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+      if (!cNombre || !cKeyRaw){ errEl.textContent = "Completa el nombre y la key del nuevo centro."; errEl.hidden = false; return; }
+      if (state.centrosDef.some(function(c){ return c.key === cKeyRaw; })){ errEl.textContent = "Ya existe un centro con esa key."; errEl.hidden = false; return; }
+      state.centrosDef.push({ key: cKeyRaw, nombre: cNombre, empresaKey: empKeyForNew });
+      state.centers[cKeyRaw] = { nombre: cNombre, employees: [], nextComprobanteFolio: 1 };
+      localDirty.centrosDef = true;
+      persistState();
+      renderEmpresasGrid();
+      renderApp();
+      return;
+    }
+    var cKey = centroBtn.getAttribute("data-centro");
+    if (cAction === "save"){
+      var editInput = document.querySelector('.centro-edit-nombre[data-centro="'+cKey+'"]');
+      var nuevoNombreCentro = editInput.value.trim();
+      if (!nuevoNombreCentro){ errEl.textContent = "El nombre del centro no puede quedar vacío."; errEl.hidden = false; return; }
+      var cdef = state.centrosDef.filter(function(c){ return c.key === cKey; })[0];
+      if (cdef) cdef.nombre = nuevoNombreCentro;
+      if (state.centers[cKey]) state.centers[cKey].nombre = nuevoNombreCentro;
+      localDirty.centrosDef = true;
+      persistState();
+      renderEmpresasGrid();
+      renderApp();
+    } else if (cAction === "remove"){
+      var employeesInCentro = (state.centers[cKey] && state.centers[cKey].employees) || [];
+      if (employeesInCentro.length > 0){
+        errEl.textContent = "No puedes eliminar un centro con colaboradores activos. Muévelos o elimínalos primero.";
+        errEl.hidden = false;
+        return;
+      }
+      if (confirm('¿Eliminar el centro "'+centerLabel(cKey)+'"? Esta acción no se puede deshacer.')){
+        state.centrosDef = state.centrosDef.filter(function(c){ return c.key !== cKey; });
+        delete state.centers[cKey];
+        state.operators.forEach(function(o){ o.centros = (o.centros||[]).filter(function(k){ return k !== cKey; }); });
+        localDirty.centrosDef = true;
+        localDirty.operators = true;
+        persistState();
+        renderEmpresasGrid();
+        renderApp();
+      }
+    }
+  });
+  document.getElementById("empresaAdd").addEventListener("click", function(){
+    if (!currentUser || currentUser.role !== "admin" || !isHoldingWide(currentUser)) return; // crear empresa es una acción a nivel Holding
+    var errEl = document.getElementById("empresaFormError");
+    errEl.hidden = true;
+    var nombre = document.getElementById("empresaNewNombre").value.trim();
+    var keyRaw = document.getElementById("empresaNewKey").value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+    var logo = document.getElementById("empresaNewLogo").value.trim();
+    if (!nombre || !keyRaw){ errEl.textContent = "Completa la razón social y la key de la nueva empresa."; errEl.hidden = false; return; }
+    if (state.empresas.some(function(e){ return e.key === keyRaw; })){ errEl.textContent = "Ya existe una empresa con esa key."; errEl.hidden = false; return; }
+    state.empresas.push({ key: keyRaw, nombre: nombre, logoUrl: logo });
+    localDirty.empresas = true;
+    document.getElementById("empresaNewNombre").value = "";
+    document.getElementById("empresaNewKey").value = "";
+    document.getElementById("empresaNewLogo").value = "";
+    persistState();
+    renderEmpresasGrid();
+    renderApp();
+  });
+
   // ---------- Gestión de usuarios: administradores + operadores (admin) ----------
   document.getElementById("btnManageOperators").addEventListener("click", function(){
     if (!currentUser || currentUser.role !== "admin") return;
@@ -2260,15 +2605,18 @@
   });
   function renderWebhookSection(){
     var section = document.getElementById("webhookSection");
-    var isSuper = !!(currentUser && currentUser.superadmin);
-    section.hidden = !isSuper;
-    if (!isSuper) return;
+    // El aviso automático por correo es una configuración a nivel Holding: además de super
+    // administrador, se exige que el admin sea "Holding-wide" (sin restricción de empresas), para
+    // que un admin acotado a una sola empresa no pueda cambiar esta configuración global.
+    var allowed = !!(currentUser && currentUser.superadmin && isHoldingWide(currentUser));
+    section.hidden = !allowed;
+    if (!allowed) return;
     document.getElementById("webhookUrl").value = (state.settings && state.settings.notifyWebhookUrl) || "";
     document.getElementById("webhookSecret").value = (state.settings && state.settings.notifyWebhookSecret) || "";
     document.getElementById("webhookTestResult").hidden = true;
   }
   document.getElementById("webhookSave").addEventListener("click", function(){
-    if (!currentUser || !currentUser.superadmin) return;
+    if (!currentUser || !currentUser.superadmin || !isHoldingWide(currentUser)) return;
     state.settings = state.settings || { notifyWebhookUrl: "", notifyWebhookSecret: "" };
     state.settings.notifyWebhookUrl = document.getElementById("webhookUrl").value.trim();
     state.settings.notifyWebhookSecret = document.getElementById("webhookSecret").value.trim();
@@ -2280,7 +2628,7 @@
     resEl.hidden = false;
   });
   document.getElementById("webhookTest").addEventListener("click", function(){
-    if (!currentUser || !currentUser.superadmin) return;
+    if (!currentUser || !currentUser.superadmin || !isHoldingWide(currentUser)) return;
     var url = document.getElementById("webhookUrl").value.trim();
     var secret = document.getElementById("webhookSecret").value.trim();
     var resEl = document.getElementById("webhookTestResult");
@@ -2311,7 +2659,10 @@
   });
   function renderAdminsGrid(){
     var section = document.getElementById("adminsSection");
-    var isSuper = !!(currentUser && currentUser.superadmin);
+    // Gestionar administradores (crear/editar/quitar) es una acción a nivel Holding: además de
+    // super administrador, se exige que sea "Holding-wide" (sin restricción de empresas) — evita
+    // que un admin de una sola empresa pueda escalar privilegios creando/editando otros admins.
+    var isSuper = !!(currentUser && currentUser.superadmin && isHoldingWide(currentUser));
     section.hidden = !isSuper;
     if (!isSuper) return;
     var host = document.getElementById("adminsGrid");
@@ -2333,33 +2684,49 @@
   function renderOperatorsGrid(){
     renderAdminsGrid();
     var host = document.getElementById("operatorsGrid");
-    host.innerHTML = CENTERS.map(function(c){
-      var ops = getOperatorsForCenter(c.key);
-      var rows = ops.length ? ops.map(function(op){
-        var extra = [];
-        if (op.viewer) extra.push("Solo lectura");
-        var otherCentros = (op.centros||[]).filter(function(k){ return k !== c.key; }).map(centerLabel);
-        if (otherCentros.length) extra.push("también: " + otherCentros.join(", "));
-        var extraNote = extra.length ? '<div class="note" style="margin:2px 0 0;">'+escapeHtml(extra.join(" · "))+'</div>' : "";
-        return '<div class="operator-row">'+
-          '<span class="op-row-user">'+escapeHtml(op.username)+extraNote+'</span>'+
-          '<span class="op-row-actions">'+
-            '<button class="small ghost" data-op-action="edit" data-op-id="'+op.id+'">Editar</button>'+
-            '<button class="small ghost danger" data-op-action="remove" data-op-id="'+op.id+'">Quitar</button>'+
-          '</span>'+
-        '</div>';
-      }).join("") : '<div class="op-user">Sin operadores asignados</div>';
-      return '<div class="operator-card">'+
-        '<h4>'+escapeHtml(c.nombre)+'</h4>'+
-        '<div class="op-list">'+rows+'</div>'+
-        '<div class="op-actions">'+
-          '<button class="small ghost" data-op-action="add" data-centro="'+c.key+'">+ Agregar operador</button>'+
-        '</div>'+
-      '</div>';
-    }).join("");
+    // Cualquier admin (Holding-wide o restringido) gestiona operadores dentro de las empresas y
+    // centros que puede ver; si ve más de una empresa, se agrupan visualmente con un subtítulo.
+    var empresas = empresasVisibles();
+    var centros = centrosVisibles();
+    var showEmpresaGroups = empresas.length > 1;
+    var htmlParts = [];
+    empresas.forEach(function(emp){
+      var centrosEmp = centros.filter(function(c){ return c.empresaKey === emp.key; });
+      if (!centrosEmp.length) return;
+      if (showEmpresaGroups){
+        htmlParts.push('<h3 style="font-size:13px;margin:14px 0 8px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.03em;">'+escapeHtml(emp.nombre)+'</h3>');
+      }
+      centrosEmp.forEach(function(c){
+        var ops = getOperatorsForCenter(c.key);
+        var rows = ops.length ? ops.map(function(op){
+          var extra = [];
+          if (op.viewer) extra.push("Solo lectura");
+          var otherCentros = (op.centros||[]).filter(function(k){ return k !== c.key; }).map(centerLabel);
+          if (otherCentros.length) extra.push("también: " + otherCentros.join(", "));
+          var extraNote = extra.length ? '<div class="note" style="margin:2px 0 0;">'+escapeHtml(extra.join(" · "))+'</div>' : "";
+          return '<div class="operator-row">'+
+            '<span class="op-row-user">'+escapeHtml(op.username)+extraNote+'</span>'+
+            '<span class="op-row-actions">'+
+              '<button class="small ghost" data-op-action="edit" data-op-id="'+op.id+'">Editar</button>'+
+              '<button class="small ghost danger" data-op-action="remove" data-op-id="'+op.id+'">Quitar</button>'+
+            '</span>'+
+          '</div>';
+        }).join("") : '<div class="op-user">Sin operadores asignados</div>';
+        htmlParts.push(
+          '<div class="operator-card">'+
+            '<h4>'+escapeHtml(c.nombre)+'</h4>'+
+            '<div class="op-list">'+rows+'</div>'+
+            '<div class="op-actions">'+
+              '<button class="small ghost" data-op-action="add" data-centro="'+c.key+'">+ Agregar operador</button>'+
+            '</div>'+
+          '</div>'
+        );
+      });
+    });
+    host.innerHTML = htmlParts.join("");
   }
   document.getElementById("adminsGrid").addEventListener("click", function(e){
-    if (!currentUser || !currentUser.superadmin) return;
+    if (!currentUser || !currentUser.superadmin || !isHoldingWide(currentUser)) return;
     var btn = e.target.closest("[data-admin-action]");
     if (!btn) return;
     var action = btn.getAttribute("data-admin-action");
@@ -2413,7 +2780,9 @@
   var operatorFormCentro = null;
   var operatorFormEditingId = null;
   function openUserForm(kind, centro, id){
-    if (kind === "admin" && (!currentUser || !currentUser.superadmin)) return;
+    // Gestionar administradores queda reservado a administradores Holding-wide (además de
+    // superadmin), igual que renderAdminsGrid/renderWebhookSection.
+    if (kind === "admin" && (!currentUser || !currentUser.superadmin || !isHoldingWide(currentUser))) return;
     userFormKind = kind;
     operatorFormCentro = centro;
     operatorFormEditingId = id || null;
@@ -2421,20 +2790,46 @@
     var existing = isAdmin ? (id ? getAdminById(id) : null) : (id ? getOperatorById(id) : null);
     document.getElementById("operatorCentroField").hidden = isAdmin;
     document.getElementById("operatorSuperField").hidden = !isAdmin;
+    document.getElementById("operatorEmpresasField").hidden = !isAdmin;
     document.getElementById("operatorEmailField").hidden = !isAdmin;
     document.getElementById("operatorViewerField").hidden = isAdmin;
     document.getElementById("operatorFormTitle").textContent = isAdmin
       ? (existing ? "Editar administrador" : "Nuevo administrador")
       : (existing ? "Editar operador" : "Nuevo operador");
     if (!isAdmin){
+      // Los centros ofrecidos se limitan a los visibles para el admin actual (todos si es
+      // Holding-wide), agrupados por empresa cuando ese admin ve más de una.
       var existingCentros = existing ? (existing.centros || []) : (centro ? [centro] : []);
-      document.getElementById("operatorCentrosChecks").innerHTML = CENTERS.map(function(c){
-        var checked = existingCentros.indexOf(c.key) !== -1 ? " checked" : "";
+      var centrosDisponibles = centrosVisibles();
+      var empresasDisponibles = empresasVisibles();
+      var mostrarGrupos = empresasDisponibles.length > 1;
+      var checksHtml = "";
+      empresasDisponibles.forEach(function(emp){
+        var centrosEmp = centrosDisponibles.filter(function(c){ return c.empresaKey === emp.key; });
+        if (!centrosEmp.length) return;
+        if (mostrarGrupos){
+          checksHtml += '<div style="width:100%;font-weight:600;font-size:12px;color:var(--text-secondary);margin-top:6px;">'+escapeHtml(emp.nombre)+'</div>';
+        }
+        checksHtml += centrosEmp.map(function(c){
+          var checked = existingCentros.indexOf(c.key) !== -1 ? " checked" : "";
+          return '<label style="display:flex;align-items:center;gap:6px;font-weight:400;">'+
+            '<input type="checkbox" class="op-centro-check" value="'+c.key+'"'+checked+'> '+escapeHtml(c.nombre)+
+          '</label>';
+        }).join("");
+      });
+      document.getElementById("operatorCentrosChecks").innerHTML = checksHtml;
+      document.getElementById("operatorViewer").checked = existing ? !!existing.viewer : false;
+    } else {
+      // Empresas con acceso del administrador (ninguna marcada = Holding-wide, ve todas). Solo
+      // llega aquí un admin Holding-wide (ver guardia arriba), así que puede asignar cualquier
+      // empresa existente.
+      var existingEmpresas = existing ? (existing.empresas || []) : [];
+      document.getElementById("operatorEmpresasChecks").innerHTML = state.empresas.map(function(e){
+        var checked = existingEmpresas.indexOf(e.key) !== -1 ? " checked" : "";
         return '<label style="display:flex;align-items:center;gap:6px;font-weight:400;">'+
-          '<input type="checkbox" class="op-centro-check" value="'+c.key+'"'+checked+'> '+escapeHtml(c.nombre)+
+          '<input type="checkbox" class="admin-empresa-check" value="'+e.key+'"'+checked+'> '+escapeHtml(e.nombre)+
         '</label>';
       }).join("");
-      document.getElementById("operatorViewer").checked = existing ? !!existing.viewer : false;
     }
     document.getElementById("operatorUser").value = existing ? existing.username : "";
     document.getElementById("operatorPin").value = "";
@@ -2451,7 +2846,7 @@
     var pin2 = document.getElementById("operatorPin2").value;
     var errEl = document.getElementById("operatorFormError");
     var isAdmin = userFormKind === "admin";
-    if (isAdmin && (!currentUser || !currentUser.superadmin)){ document.getElementById("operatorFormOverlay").hidden = true; return; }
+    if (isAdmin && (!currentUser || !currentUser.superadmin || !isHoldingWide(currentUser))){ document.getElementById("operatorFormOverlay").hidden = true; return; }
     var existing = isAdmin
       ? (operatorFormEditingId ? getAdminById(operatorFormEditingId) : null)
       : (operatorFormEditingId ? getOperatorById(operatorFormEditingId) : null);
@@ -2473,15 +2868,18 @@
       errEl.textContent = "Selecciona al menos un centro con acceso."; errEl.hidden = false; return;
     }
     var isViewer = !isAdmin && document.getElementById("operatorViewer").checked;
+    // Empresas con acceso del administrador: ninguna marcada = Holding-wide (ve/gestiona todas).
+    var selectedEmpresasAdmin = isAdmin ? Array.from(document.querySelectorAll("#operatorEmpresasChecks .admin-empresa-check:checked")).map(function(el){ return el.value; }) : [];
     var applyAndSave = function(hash){
       if (isAdmin){
         if (existing){
           existing.username = user;
           existing.superadmin = document.getElementById("operatorSuperadmin").checked;
           existing.email = email;
+          existing.empresas = selectedEmpresasAdmin;
           if (hash) existing.pinHash = hash;
         } else {
-          state.admins.push({ id: uid(), username: user, pinHash: hash, superadmin: document.getElementById("operatorSuperadmin").checked, email: email });
+          state.admins.push({ id: uid(), username: user, pinHash: hash, superadmin: document.getElementById("operatorSuperadmin").checked, email: email, empresas: selectedEmpresasAdmin });
         }
       } else {
         if (existing){
@@ -2501,18 +2899,67 @@
     if (pin){ hashPin(pin).then(applyAndSave); } else { applyAndSave(null); }
   });
 
+  // ---------- Empresa tabs (solo si el usuario actual ve más de una empresa) ----------
+  // Se muestran POR ENCIMA de los tabs de centro y filtran qué centros aparecen debajo. Estado
+  // propio: `uiActiveEmpresa`.
+  function renderEmpresaTabs(){
+    var host = document.getElementById("empresaTabs");
+    if (!currentUser){ host.hidden = true; return; }
+    var empresas = empresasVisibles();
+    if (empresas.length <= 1){
+      host.hidden = true;
+      uiActiveEmpresa = empresas.length ? empresas[0].key : null;
+      return;
+    }
+    host.hidden = false;
+    if (!uiActiveEmpresa || !empresas.some(function(e){ return e.key === uiActiveEmpresa; })){
+      // Al entrar (o si la empresa activa dejó de ser válida), se prefiere la empresa del centro
+      // actualmente activo; si no corresponde a ninguna visible, se usa la primera.
+      var activeCentroEmpresa = empresaDeCentro(activeCenterKey());
+      uiActiveEmpresa = (activeCentroEmpresa && empresas.some(function(e){ return e.key === activeCentroEmpresa; }))
+        ? activeCentroEmpresa
+        : empresas[0].key;
+    }
+    host.innerHTML = empresas.map(function(e){
+      return '<button class="center-tab'+(uiActiveEmpresa===e.key?' active':'')+'" data-empresa="'+e.key+'">'+escapeHtml(e.nombre)+'</button>';
+    }).join("");
+  }
+  document.getElementById("empresaTabs").addEventListener("click", function(e){
+    if (!currentUser) return;
+    var btn = e.target.closest("[data-empresa]");
+    if (!btn) return;
+    uiActiveEmpresa = btn.getAttribute("data-empresa");
+    // Al cambiar de empresa, el centro activo debe pasar a ser uno visible dentro de ella.
+    var centrosEmpresa = centrosVisibles().filter(function(c){ return c.empresaKey === uiActiveEmpresa; });
+    if (currentUser.role === "admin"){
+      if (!centrosEmpresa.some(function(c){ return c.key === uiAdminActiveCenter; })){
+        uiAdminActiveCenter = centrosEmpresa[0] ? centrosEmpresa[0].key : null;
+      }
+    } else {
+      if (!centrosEmpresa.some(function(c){ return c.key === uiOperatorActiveCenter; })){
+        uiOperatorActiveCenter = centrosEmpresa[0] ? centrosEmpresa[0].key : null;
+      }
+    }
+    uiSelectedEmployee = null;
+    renderApp();
+  });
+
   // ---------- Centro tabs (admin, y operadores con acceso a más de un centro) ----------
   function renderCenterTabs(){
     var host = document.getElementById("centerTabs");
     if (!currentUser){ host.hidden = true; return; }
     var visible;
     if (currentUser.role === "admin"){
-      visible = CENTERS;
+      visible = centrosVisibles();
     } else {
       var cs = currentUser.centros || [];
       // Un operador con un solo centro asignado no necesita pestañas (comportamiento original).
       if (cs.length <= 1){ host.hidden = true; return; }
-      visible = CENTERS.filter(function(c){ return cs.indexOf(c.key) !== -1; });
+      visible = centrosVisibles();
+    }
+    // Los tabs de empresa (si están visibles) acotan cuáles centros se listan aquí debajo.
+    if (uiActiveEmpresa){
+      visible = visible.filter(function(c){ return c.empresaKey === uiActiveEmpresa; });
     }
     host.hidden = false;
     var active = activeCenterKey();
@@ -2560,9 +3007,14 @@
     document.getElementById("whoUser").textContent = currentUser.username + (currentUser.role === "operator" ? (" · " + centerLabel(activeCenterKey())) : "");
     document.getElementById("whoRole").textContent = currentUser.role === "admin" ? (currentUser.superadmin ? "Super administrador" : "Administrador") : (isViewerNow ? "Operador (solo lectura)" : "Operador");
     document.getElementById("btnManageOperators").hidden = currentUser.role !== "admin";
+    // "Gestionar empresas y centros" es visible para cualquier admin (Holding-wide o restringido):
+    // crear centros dentro de una empresa ya visible está permitido para cualquiera; crear o
+    // eliminar una empresa queda acotado internamente a admins Holding-wide (ver renderEmpresasGrid).
+    document.getElementById("btnManageEmpresas").hidden = currentUser.role !== "admin";
     document.getElementById("btnAddEmployee").hidden = isViewerNow;
     document.getElementById("btnImportJson").hidden = currentUser.role !== "admin"; // importar es exclusivo de administradores
     document.getElementById("refDateInput").value = uiRefDate;
+    renderEmpresaTabs();
     renderCenterTabs();
     renderStats();
     renderTable();
