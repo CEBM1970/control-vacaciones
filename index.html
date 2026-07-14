@@ -642,13 +642,30 @@
   // La siguiente constante representa los 4 centros que la app ya tenía antes de esta
   // funcionalidad; se usa solo para la migración automática (ver normalizeState) de datos
   // guardados antes de multiempresa, que quedan bajo una empresa por defecto "Preserva Ltda".
+  // Prefijos de folio "de siempre" para los 4 centros clásicos (antes vivían hardcodeados en
+  // centerFolioPrefix); se preservan aquí para que la migración de datos ya sincronizados no
+  // cambie el prefijo de folios ya emitidos. Para centros nuevos (creados desde la UI, clásicos
+  // o no) el prefijo pasa a ser un campo editable más de cada centro (ver deriveFolioPrefix).
+  var FOLIO_PREFIJOS_CLASICOS = { administracion: "ADM", talca: "TAL", los_angeles: "LAG", aserradero: "ASE" };
   var CENTROS_CLASICOS = [
     { key: "administracion", nombre: "Administración" },
     { key: "talca", nombre: "Talca" },
     { key: "los_angeles", nombre: "Los Ángeles" },
     { key: "aserradero", nombre: "Aserradero" }
-  ];
-  var EMPRESA_POR_DEFECTO = { key: "preserva", nombre: "Preserva Ltda", logoUrl: "logo.png" };
+  ].map(function(c){ return { key: c.key, nombre: c.nombre, folioPrefix: FOLIO_PREFIJOS_CLASICOS[c.key] }; });
+  // Sugiere un prefijo de folio a partir del nombre del centro (solo un punto de partida: el
+  // campo queda editable en "Gestionar empresas y centros" para que el usuario lo ajuste).
+  function deriveFolioPrefix(nombre){
+    var sinTildes = String(nombre || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    var soloLetras = sinTildes.toUpperCase().replace(/[^A-Z]/g, "");
+    return (soloLetras.slice(0, 3) || "GEN");
+  }
+  var EMPRESA_POR_DEFECTO = {
+    key: "preserva", nombre: "Preserva Ltda", logoUrl: "logo.png",
+    // Datos legales de la empresa (opcionales, se muestran en el encabezado de comprobantes y
+    // cartolas cuando están completos). Quedan vacíos por defecto y son editables por empresa.
+    rutEmpresa: "", direccion: "", telefono: "", giro: "", email: ""
+  };
   function centerLabel(key){
     var c = state.centrosDef.filter(function(c){ return c.key === key; })[0];
     return c ? c.nombre : key;
@@ -717,8 +734,12 @@
 
   // ---------- Estado compartido (sincronizado) ----------
   function defaultState(){
-    var empresas = [{ key: EMPRESA_POR_DEFECTO.key, nombre: EMPRESA_POR_DEFECTO.nombre, logoUrl: EMPRESA_POR_DEFECTO.logoUrl }];
-    var centrosDef = CENTROS_CLASICOS.map(function(c){ return { key: c.key, nombre: c.nombre, empresaKey: EMPRESA_POR_DEFECTO.key }; });
+    var empresas = [{
+      key: EMPRESA_POR_DEFECTO.key, nombre: EMPRESA_POR_DEFECTO.nombre, logoUrl: EMPRESA_POR_DEFECTO.logoUrl,
+      rutEmpresa: EMPRESA_POR_DEFECTO.rutEmpresa, direccion: EMPRESA_POR_DEFECTO.direccion,
+      telefono: EMPRESA_POR_DEFECTO.telefono, giro: EMPRESA_POR_DEFECTO.giro, email: EMPRESA_POR_DEFECTO.email
+    }];
+    var centrosDef = CENTROS_CLASICOS.map(function(c){ return { key: c.key, nombre: c.nombre, empresaKey: EMPRESA_POR_DEFECTO.key, folioPrefix: c.folioPrefix }; });
     var centers = {};
     centrosDef.forEach(function(c){ centers[c.key] = { nombre: c.nombre, employees: [], nextComprobanteFolio: 1 }; });
     return {
@@ -742,7 +763,14 @@
     // datos ya sincronizados en Google Drive por el usuario real sigan funcionando sin pérdidas.
     var empresas = (Array.isArray(raw.empresas) && raw.empresas.length)
       ? raw.empresas.filter(function(e){ return e && e.key && e.nombre; }).map(function(e){
-          return { key: e.key, nombre: e.nombre, logoUrl: e.logoUrl || "" };
+          // Datos legales de la empresa (RUT, dirección, teléfono, giro, e-mail): opcionales,
+          // se muestran en comprobantes/cartolas cuando están completos. Vacíos por defecto para
+          // no inventar datos legales de una empresa que todavía no los cargó.
+          return {
+            key: e.key, nombre: e.nombre, logoUrl: e.logoUrl || "",
+            rutEmpresa: e.rutEmpresa || "", direccion: e.direccion || "",
+            telefono: e.telefono || "", giro: e.giro || "", email: e.email || ""
+          };
         })
       : base.empresas;
 
@@ -750,7 +778,14 @@
     // clásicos bajo la empresa por defecto, conservando exactamente las mismas keys de siempre
     // (para no perder la asociación con `state.centers[key].employees` ya sincronizada).
     var centrosDef = (Array.isArray(raw.centrosDef) && raw.centrosDef.length)
-      ? raw.centrosDef.filter(function(c){ return c && c.key && c.nombre && c.empresaKey; })
+      ? raw.centrosDef.filter(function(c){ return c && c.key && c.nombre && c.empresaKey; }).map(function(c){
+          // Prefijo de folio: si el centro ya traía uno, se respeta tal cual (no cambia folios ya
+          // emitidos). Si no trae (datos guardados antes de este campo), se usa el prefijo clásico
+          // para los 4 centros de siempre, o se sugiere uno nuevo a partir del nombre para
+          // cualquier otro centro ya creado (reemplaza el antiguo comodín genérico "GEN").
+          var folioPrefix = c.folioPrefix || FOLIO_PREFIJOS_CLASICOS[c.key] || deriveFolioPrefix(c.nombre);
+          return { key: c.key, nombre: c.nombre, empresaKey: c.empresaKey, folioPrefix: folioPrefix };
+        })
       : base.centrosDef;
 
     var centers = {};
@@ -1694,9 +1729,12 @@
   }
 
   // ---------- Comprobante de vacaciones (folio correlativo + documento imprimible) ----------
+  // El prefijo de folio es ahora un campo editable de cada centro (ver "Gestionar empresas y
+  // centros"), ya no una lista fija en el código — necesario porque los centros se crean
+  // dinámicamente y cada uno debe poder tener su propio prefijo distintivo.
   function centerFolioPrefix(centerKey){
-    var map = { administracion: "ADM", talca: "TAL", los_angeles: "LAG", aserradero: "ASE" };
-    return map[centerKey] || "GEN";
+    var c = state.centrosDef.filter(function(c){ return c.key === centerKey; })[0];
+    return (c && c.folioPrefix) || "GEN";
   }
   // Asigna folio de forma idempotente: si el periodo ya tiene comprobanteFolio, no vuelve a
   // consumir el correlativo (permite re-emitir el mismo comprobante sin duplicar folios).
@@ -1715,11 +1753,28 @@
   // del centro correspondiente. Si `empresaKey` es null (por ejemplo, un informe que abarca
   // centros de MÁS de una empresa a la vez), se usa un nombre genérico del Holding y sin logo
   // de una empresa específica, para no confundir a quien lo reciba.
+  // Arma la línea de datos legales de la empresa (RUT, dirección, teléfono, e-mail, giro) que se
+  // muestra bajo el nombre en comprobantes/cartolas — solo con los campos que estén completos,
+  // para no mostrar etiquetas vacías en empresas que todavía no cargaron sus datos legales.
+  function empresaLegalLine(empresaKey){
+    if (!empresaKey) return "";
+    var e = state.empresas.filter(function(x){ return x.key === empresaKey; })[0];
+    if (!e) return "";
+    var partes = [];
+    if (e.rutEmpresa) partes.push("RUT " + e.rutEmpresa);
+    if (e.direccion) partes.push(e.direccion);
+    if (e.telefono) partes.push(e.telefono);
+    if (e.email) partes.push(e.email);
+    if (e.giro) partes.push("Giro: " + e.giro);
+    return partes.join(" · ");
+  }
   function encabezadoEmpresa(empresaKey){
     var nombre = empresaKey ? empresaLabel(empresaKey) : "Holding Preserva";
     var logo = empresaKey ? logoUrlDeEmpresa(empresaKey) : "";
     var logoHtml = logo ? '<img src="'+escapeHtml(logo)+'" alt="'+escapeHtml(nombre)+'" onerror="this.style.display=\'none\'">' : "";
-    return { nombre: nombre, logoHtml: logoHtml };
+    var legal = empresaLegalLine(empresaKey);
+    var legalHtml = legal ? '<p class="empresa-legal">'+escapeHtml(legal)+'</p>' : "";
+    return { nombre: nombre, logoHtml: logoHtml, legalHtml: legalHtml };
   }
   function abrirComprobante(emp, periodo, centroKey){
     var folio = assignComprobanteFolio(emp, periodo, centroKey);
@@ -1740,6 +1795,7 @@
         '.header img{height:56px;width:auto;}'+
         '.header h1{font-size:18px;margin:0;color:#1a5c3a;}'+
         '.header p{margin:2px 0 0;font-size:12.5px;color:#555;}'+
+        '.header p.empresa-legal{font-size:11px;color:#777;margin-top:3px;}'+
         'h2{font-size:16px;margin:0 0 4px;}'+
         '.folio{font-size:13px;color:#555;margin:0 0 20px;}'+
         'table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;}'+
@@ -1755,7 +1811,7 @@
       '</style></head><body>'+
       '<div class="header">'+
         empresa.logoHtml+
-        '<div><h1>'+escapeHtml(empresa.nombre)+'</h1><p>Control de Vacaciones del Personal</p></div>'+
+        '<div><h1>'+escapeHtml(empresa.nombre)+'</h1><p>Control de Vacaciones del Personal</p>'+empresa.legalHtml+'</div>'+
       '</div>'+
       '<h2>Comprobante de Vacaciones</h2>'+
       '<p class="folio">Folio N° '+escapeHtml(folio)+' &nbsp;·&nbsp; Emitido el '+emitidoStr+'</p>'+
@@ -1801,6 +1857,7 @@
         '.header img{height:56px;width:auto;}'+
         '.header h1{font-size:18px;margin:0;color:#1a5c3a;}'+
         '.header p{margin:2px 0 0;font-size:12.5px;color:#555;}'+
+        '.header p.empresa-legal{font-size:11px;color:#777;margin-top:3px;}'+
         'h2{font-size:16px;margin:0 0 4px;}'+
         '.subtitle{font-size:13px;color:#555;margin:0 0 20px;}'+
         'table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;}'+
@@ -1814,7 +1871,7 @@
       '</style></head><body>'+
       '<div class="header">'+
         empresa.logoHtml+
-        '<div><h1>'+escapeHtml(empresa.nombre)+'</h1><p>Control de Vacaciones del Personal</p></div>'+
+        '<div><h1>'+escapeHtml(empresa.nombre)+'</h1><p>Control de Vacaciones del Personal</p>'+empresa.legalHtml+'</div>'+
       '</div>'+
       '<h2>'+escapeHtml(tituloDocumento)+'</h2>'+
       bodyHtml+
@@ -2449,7 +2506,9 @@
         return '<div class="operator-row">'+
           '<span class="op-row-user">'+
             '<input type="text" class="centro-edit-nombre" data-centro="'+c.key+'" value="'+escapeHtml(c.nombre)+'" style="font:inherit;font-weight:600;border:1px solid var(--border);border-radius:6px;padding:3px 8px;">'+
-            '<div class="note" style="margin:2px 0 0;font-weight:400;">'+count+' colaborador(es) · key: '+escapeHtml(c.key)+'</div>'+
+            '<div class="note" style="margin:2px 0 0;font-weight:400;">'+count+' colaborador(es) · key: '+escapeHtml(c.key)+
+              ' · prefijo de folio: <input type="text" class="centro-edit-folio" data-centro="'+c.key+'" value="'+escapeHtml(c.folioPrefix||"")+'" maxlength="6" style="width:60px;font:inherit;font-weight:600;text-transform:uppercase;border:1px solid var(--border);border-radius:6px;padding:2px 6px;">'+
+            '</div>'+
           '</span>'+
           '<span class="op-row-actions">'+
             '<button class="small ghost" data-centro-action="save" data-centro="'+c.key+'">Guardar</button>'+
@@ -2468,7 +2527,26 @@
           '<button class="small ghost" data-empresa-action="save" data-empresa="'+emp.key+'" style="align-self:flex-end;">Guardar</button>'+
           (holdingWide ? '<button class="small ghost danger" data-empresa-action="remove" data-empresa="'+emp.key+'" style="align-self:flex-end;">Eliminar empresa</button>' : '')+
         '</div>'+
-        '<p class="note" style="margin:4px 0 8px;">key: '+escapeHtml(emp.key)+'</p>'+
+        '<div class="form-row" style="margin-top:-6px;">'+
+          '<label class="field" style="flex:1;min-width:160px;">RUT empresa'+
+            '<input type="text" class="empresa-edit-rut" data-empresa="'+emp.key+'" value="'+escapeHtml(emp.rutEmpresa||"")+'" placeholder="Ej: 77.139.536-8">'+
+          '</label>'+
+          '<label class="field" style="flex:2;min-width:220px;">Dirección'+
+            '<input type="text" class="empresa-edit-direccion" data-empresa="'+emp.key+'" value="'+escapeHtml(emp.direccion||"")+'" placeholder="Ej: Parque Empresarial Lote 14, Puerto Varas">'+
+          '</label>'+
+          '<label class="field" style="flex:1;min-width:150px;">Teléfono'+
+            '<input type="text" class="empresa-edit-telefono" data-empresa="'+emp.key+'" value="'+escapeHtml(emp.telefono||"")+'" placeholder="Ej: +56934117057">'+
+          '</label>'+
+        '</div>'+
+        '<div class="form-row" style="margin-top:-6px;">'+
+          '<label class="field" style="flex:1;min-width:200px;">E-mail'+
+            '<input type="text" class="empresa-edit-email" data-empresa="'+emp.key+'" value="'+escapeHtml(emp.email||"")+'" placeholder="Ej: contacto@preserva.cl">'+
+          '</label>'+
+          '<label class="field" style="flex:2;min-width:220px;">Giro'+
+            '<input type="text" class="empresa-edit-giro" data-empresa="'+emp.key+'" value="'+escapeHtml(emp.giro||"")+'" placeholder="Ej: Venta al por mayor de madera en bruto">'+
+          '</label>'+
+        '</div>'+
+        '<p class="note" style="margin:4px 0 8px;">key: '+escapeHtml(emp.key)+'. Los datos legales son opcionales y solo se muestran en comprobantes/cartolas cuando están completos.</p>'+
         '<div class="op-list">'+centrosRows+'</div>'+
         '<div class="form-row" style="margin-top:8px;">'+
           '<label class="field">Nuevo centro — Nombre'+
@@ -2491,13 +2569,27 @@
       var eAction = empBtn.getAttribute("data-empresa-action");
       var eKey = empBtn.getAttribute("data-empresa");
       if (eAction === "save"){
-        // Editar nombre/logo de una empresa ya visible lo puede hacer cualquier admin que la vea.
+        // Editar nombre/logo/datos legales de una empresa ya visible lo puede hacer cualquier
+        // admin que la vea (los datos legales son opcionales, se guardan tal cual estén).
         var nombreInput = document.querySelector('.empresa-edit-nombre[data-empresa="'+eKey+'"]');
         var logoInput = document.querySelector('.empresa-edit-logo[data-empresa="'+eKey+'"]');
+        var rutInput = document.querySelector('.empresa-edit-rut[data-empresa="'+eKey+'"]');
+        var direccionInput = document.querySelector('.empresa-edit-direccion[data-empresa="'+eKey+'"]');
+        var telefonoInput = document.querySelector('.empresa-edit-telefono[data-empresa="'+eKey+'"]');
+        var emailInput = document.querySelector('.empresa-edit-email[data-empresa="'+eKey+'"]');
+        var giroInput = document.querySelector('.empresa-edit-giro[data-empresa="'+eKey+'"]');
         var nuevoNombreEmp = nombreInput.value.trim();
         if (!nuevoNombreEmp){ errEl.textContent = "La razón social no puede quedar vacía."; errEl.hidden = false; return; }
         var empObj = state.empresas.filter(function(x){ return x.key === eKey; })[0];
-        if (empObj){ empObj.nombre = nuevoNombreEmp; empObj.logoUrl = logoInput.value.trim(); }
+        if (empObj){
+          empObj.nombre = nuevoNombreEmp;
+          empObj.logoUrl = logoInput.value.trim();
+          empObj.rutEmpresa = rutInput.value.trim();
+          empObj.direccion = direccionInput.value.trim();
+          empObj.telefono = telefonoInput.value.trim();
+          empObj.email = emailInput.value.trim();
+          empObj.giro = giroInput.value.trim();
+        }
         localDirty.empresas = true;
         persistState();
         renderEmpresasGrid();
@@ -2534,7 +2626,9 @@
       var cKeyRaw = keyI.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
       if (!cNombre || !cKeyRaw){ errEl.textContent = "Completa el nombre y la key del nuevo centro."; errEl.hidden = false; return; }
       if (state.centrosDef.some(function(c){ return c.key === cKeyRaw; })){ errEl.textContent = "Ya existe un centro con esa key."; errEl.hidden = false; return; }
-      state.centrosDef.push({ key: cKeyRaw, nombre: cNombre, empresaKey: empKeyForNew });
+      // El prefijo de folio se sugiere automáticamente a partir del nombre; queda editable desde
+      // la fila del centro recién creado (campo "prefijo de folio") por si el usuario prefiere otro.
+      state.centrosDef.push({ key: cKeyRaw, nombre: cNombre, empresaKey: empKeyForNew, folioPrefix: deriveFolioPrefix(cNombre) });
       state.centers[cKeyRaw] = { nombre: cNombre, employees: [], nextComprobanteFolio: 1 };
       localDirty.centrosDef = true;
       persistState();
@@ -2545,10 +2639,13 @@
     var cKey = centroBtn.getAttribute("data-centro");
     if (cAction === "save"){
       var editInput = document.querySelector('.centro-edit-nombre[data-centro="'+cKey+'"]');
+      var folioInput = document.querySelector('.centro-edit-folio[data-centro="'+cKey+'"]');
       var nuevoNombreCentro = editInput.value.trim();
       if (!nuevoNombreCentro){ errEl.textContent = "El nombre del centro no puede quedar vacío."; errEl.hidden = false; return; }
+      var nuevoFolioPrefix = folioInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (!nuevoFolioPrefix){ errEl.textContent = "El prefijo de folio no puede quedar vacío."; errEl.hidden = false; return; }
       var cdef = state.centrosDef.filter(function(c){ return c.key === cKey; })[0];
-      if (cdef) cdef.nombre = nuevoNombreCentro;
+      if (cdef){ cdef.nombre = nuevoNombreCentro; cdef.folioPrefix = nuevoFolioPrefix; }
       if (state.centers[cKey]) state.centers[cKey].nombre = nuevoNombreCentro;
       localDirty.centrosDef = true;
       persistState();
