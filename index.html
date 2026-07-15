@@ -1501,7 +1501,12 @@
     var guard = 0;
     ordered.forEach(function(p){
       var remaining = countBusinessDays(p.inicio, p.fin);
-      var parts = [];
+      // `parts` guarda, en orden, cada tramo de año que este periodo toca junto con cuántos días
+      // hábiles de ESE periodo específico cayeron en ese año — así, cuando unas vacaciones cruzan
+      // el límite de un año de antigüedad (ej. 15 días hábiles que parten en el Año 1 y terminan
+      // en el Año 2), el comprobante puede mostrar el desglose exacto (cuántos días de cada año),
+      // no solo la lista de años involucrados.
+      var parts = []; // [{ lbl, dias }]
       while (remaining > 0 && guard < 2000){
         guard++;
         if (remainingInYear <= 0){
@@ -1512,11 +1517,14 @@
         var take = Math.min(remaining, remainingInYear);
         var ventana = yearWindow(emp.fechaIngreso, year);
         var lbl = "Año " + year + " (" + fmtDate(ventana.inicio) + " → " + fmtDate(ventana.fin) + ")";
-        if (parts.indexOf(lbl) === -1) parts.push(lbl);
+        var existing = parts.filter(function(x){ return x.lbl === lbl; })[0];
+        if (existing) existing.dias += take; else parts.push({ lbl: lbl, dias: take });
         remaining -= take;
         remainingInYear -= take;
       }
-      labels[p.id] = parts.join(", ");
+      labels[p.id] = parts.map(function(x){
+        return x.lbl + " — " + x.dias + (x.dias === 1 ? " día" : " días");
+      }).join(", ");
     });
     return labels;
   }
