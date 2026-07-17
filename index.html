@@ -326,7 +326,7 @@
         <img src="logo.png" alt="Preserva" class="brand-logo" onerror="this.style.display='none'">
         <div>
           <h1>Control de Vacaciones del Personal</h1>
-          <p>Feriado legal de 15 días hábiles anuales por aniversario de ingreso, con feriado progresivo (+1 día por cada 3 años tras cumplir 10 años de antigüedad).</p>
+          <p>Feriado legal de 15 días hábiles anuales por aniversario de ingreso (20 en centros de zona extrema), con feriado progresivo (+1 día por cada 3 años tras cumplir 10 años de antigüedad).</p>
         </div>
       </div>
     </header>
@@ -377,8 +377,11 @@
       empleador actual y el primer día progresivo se gana al cumplir 13 años (10 + 3), el segundo a los 16, y así sucesivamente. Los días se
       devengan proporcionalmente mes a mes dentro del año en curso. El conteo de días hábiles excluye sábados, domingos y feriados legales
       (ajustables en <button class="link-btn" onclick="document.getElementById('btnHolidays').click()">Feriados</button>).
-      Cada centro de negocio (Administración, Talca, Los Ángeles, Aserradero) solo es accesible por su operador autorizado; el administrador
-      puede ver y editar los 4. El acceso por usuario/PIN es un control práctico para uso diario del equipo — al ser una app sin servidor,
+      Los centros marcados como <strong>zona extrema</strong> (art. 67° inciso 2°, Ley 20.058 — Región de Aysén, Región de Magallanes y de
+      la Antártica Chilena, o Provincia de Palena) calculan el feriado sobre una base de 20 días hábiles en vez de 15; el feriado progresivo
+      se sigue sumando igual encima de esa base. Se activa por centro en "Gestionar empresas y centros".
+      Cada centro de negocio solo es accesible por su operador autorizado; un administrador ve y edita los centros de las empresas que
+      tiene asignadas (o todos, si es administrador Holding-wide). El acceso por usuario/PIN es un control práctico para uso diario del equipo — al ser una app sin servidor,
       no equivale a seguridad de nivel empresarial. Los datos se sincronizan entre computadores a través de la carpeta compartida de Drive
       (barra superior) cada ~20 segundos; evita que dos personas editen el mismo centro exactamente al mismo tiempo para prevenir choques.
     </div>
@@ -784,7 +787,10 @@
           // para los 4 centros de siempre, o se sugiere uno nuevo a partir del nombre para
           // cualquier otro centro ya creado (reemplaza el antiguo comodín genérico "GEN").
           var folioPrefix = c.folioPrefix || FOLIO_PREFIJOS_CLASICOS[c.key] || deriveFolioPrefix(c.nombre);
-          return { key: c.key, nombre: c.nombre, empresaKey: c.empresaKey, folioPrefix: folioPrefix };
+          // "Zona extrema" (art. 67° inciso 2°, Ley 20.058): centros marcados así calculan el
+          // feriado anual sobre una base de 20 días hábiles en vez de 15. Por defecto false para
+          // no cambiar retroactivamente el devengo de ningún centro ya existente.
+          return { key: c.key, nombre: c.nombre, empresaKey: c.empresaKey, folioPrefix: folioPrefix, zonaExtrema: !!c.zonaExtrema };
         })
       : base.centrosDef;
 
@@ -1311,8 +1317,20 @@
     // Años que deben cumplirse CON EL EMPLEADOR ACTUAL antes de empezar a sumar días progresivos.
     return Math.max(0, 10 - priorRecognizedYears(rawPriorYears));
   }
-  function entitlementForYear(n, threshold){
-    return 15 + Math.floor(Math.max(0, n - threshold) / 3);
+  // Base legal de días hábiles de feriado anual: 15 en el caso general (art. 67° inciso 1° del
+  // Código del Trabajo), o 20 para centros de negocio marcados como "zona extrema" (art. 67°
+  // inciso 2°, Ley 20.058 — trabajadores que residen y prestan servicios en la Región de Aysén,
+  // la Región de Magallanes y de la Antártica Chilena, o la Provincia de Palena). El feriado
+  // progresivo del art. 68° (+1 día cada 3 años tras cumplir 10 años de antigüedad) se suma
+  // siempre encima de esa base, sea 15 o 20.
+  var DIAS_BASE_GENERAL = 15;
+  var DIAS_BASE_ZONA_EXTREMA = 20;
+  function diasBaseFeriado(centroKey){
+    var c = state.centrosDef.filter(function(x){ return x.key === centroKey; })[0];
+    return (c && c.zonaExtrema) ? DIAS_BASE_ZONA_EXTREMA : DIAS_BASE_GENERAL;
+  }
+  function entitlementForYear(n, threshold, diasBase){
+    return (typeof diasBase === "number" ? diasBase : DIAS_BASE_GENERAL) + Math.floor(Math.max(0, n - threshold) / 3);
   }
   function monthsBetween(ingresoISO, refISO){
     var ingreso = parseISO(ingresoISO), ref = parseISO(refISO);
@@ -1324,16 +1342,17 @@
     if (days < 0) total--;
     return Math.max(0, total);
   }
-  function computeAccrual(ingresoISO, refISO, rawPriorYears){
+  function computeAccrual(ingresoISO, refISO, rawPriorYears, diasBase){
+    diasBase = typeof diasBase === "number" ? diasBase : DIAS_BASE_GENERAL;
     var threshold = progressiveThreshold(rawPriorYears);
     var totalMonths = monthsBetween(ingresoISO, refISO);
     var yearsCompleted = Math.floor(totalMonths / 12);
     var monthsIntoCurrentYear = totalMonths % 12;
     var accrued = 0;
-    for (var k = 1; k <= yearsCompleted; k++){ accrued += entitlementForYear(k, threshold); }
-    var currentYearEntitlement = entitlementForYear(yearsCompleted + 1, threshold);
+    for (var k = 1; k <= yearsCompleted; k++){ accrued += entitlementForYear(k, threshold, diasBase); }
+    var currentYearEntitlement = entitlementForYear(yearsCompleted + 1, threshold, diasBase);
     accrued += monthsIntoCurrentYear * (currentYearEntitlement / 12);
-    var extraActive = currentYearEntitlement - 15;
+    var extraActive = currentYearEntitlement - diasBase;
     return {
       totalMonths: totalMonths,
       yearsCompleted: yearsCompleted,
@@ -1342,11 +1361,14 @@
       accrued: accrued,
       extraActive: extraActive,
       threshold: threshold,
-      priorYears: priorRecognizedYears(rawPriorYears)
+      priorYears: priorRecognizedYears(rawPriorYears),
+      diasBase: diasBase
     };
   }
-  function employeeSummary(emp){
-    var acc = computeAccrual(emp.fechaIngreso, uiRefDate, emp.aniosServiciosAnteriores);
+  // `centroKey` determina la base legal aplicable (15 o 20 días) según si ese centro está
+  // marcado como zona extrema; ver diasBaseFeriado().
+  function employeeSummary(emp, centroKey){
+    var acc = computeAccrual(emp.fechaIngreso, uiRefDate, emp.aniosServiciosAnteriores, diasBaseFeriado(centroKey));
     var usados = 0;
     emp.periodos.forEach(function(p){ usados += countBusinessDays(p.inicio, p.fin); });
     var saldo = acc.accrued - usados;
@@ -1384,7 +1406,7 @@
     var totalEmp = employees.length;
     var totalSaldo = 0, negativos = 0, progresivos = 0;
     employees.forEach(function(emp){
-      var s = employeeSummary(emp);
+      var s = employeeSummary(emp, activeCenterKey());
       totalSaldo += s.saldo;
       if (s.saldo < 0) negativos++;
       if (s.acc.extraActive > 0) progresivos++;
@@ -1408,7 +1430,7 @@
       return;
     }
     var rows = employees.map(function(emp){
-      var s = employeeSummary(emp);
+      var s = employeeSummary(emp, activeCenterKey());
       var status = statusFor(s.saldo);
       var barPct = s.acc.accrued > 0 ? Math.min(100, (s.usados / s.acc.accrued) * 100) : 0;
       var over = s.usados > s.acc.accrued;
@@ -1466,7 +1488,7 @@
     var poolTomados = totalDiasTomados(emp);
     var completed = [];
     for (var y = 1; y <= Math.max(acc.yearsCompleted, 1); y++){
-      var ent = entitlementForYear(y, acc.threshold);
+      var ent = entitlementForYear(y, acc.threshold, acc.diasBase);
       var ventana = yearWindow(emp.fechaIngreso, y);
       var tomadosVentana = Math.min(Math.max(poolTomados, 0), ent);
       poolTomados -= tomadosVentana;
@@ -1492,12 +1514,12 @@
   // cronológico (fecha de inicio) en que fueron tomados, igual que el cálculo de la tabla
   // "Devengo por año". Si un periodo cruza el límite de un año, se listan todos los años que toca.
   // Se reutiliza tanto en el detalle en pantalla como en el comprobante imprimible.
-  function computePeriodoYearLabels(emp){
-    var acc = computeAccrual(emp.fechaIngreso, uiRefDate, emp.aniosServiciosAnteriores);
+  function computePeriodoYearLabels(emp, centroKey){
+    var acc = computeAccrual(emp.fechaIngreso, uiRefDate, emp.aniosServiciosAnteriores, diasBaseFeriado(centroKey));
     var labels = {};
     var ordered = emp.periodos.slice().sort(function(a,b){ return a.inicio < b.inicio ? -1 : (a.inicio > b.inicio ? 1 : 0); });
     var year = 1;
-    var remainingInYear = entitlementForYear(1, acc.threshold);
+    var remainingInYear = entitlementForYear(1, acc.threshold, acc.diasBase);
     var guard = 0;
     ordered.forEach(function(p){
       var remaining = countBusinessDays(p.inicio, p.fin);
@@ -1511,7 +1533,7 @@
         guard++;
         if (remainingInYear <= 0){
           year++;
-          remainingInYear = entitlementForYear(year, acc.threshold);
+          remainingInYear = entitlementForYear(year, acc.threshold, acc.diasBase);
           continue;
         }
         var take = Math.min(remaining, remainingInYear);
@@ -1536,7 +1558,7 @@
     var yearsRows = bal.completed.map(function(row){
       var pendClass = row.pendiente <= 0 ? "good" : (row.pendiente < row.ent ? "warning" : "critical");
       return '<tr><td>Año '+row.year+'<div class="note" style="margin:2px 0 0;">'+fmtDate(row.ventana.inicio)+' → '+fmtDate(row.ventana.fin)+'</div></td>'+
-        '<td class="num">'+row.ent+(row.ent>15?' <span class="note" style="display:inline;">(progresivo)</span>':'')+'</td>'+
+        '<td class="num">'+row.ent+(row.ent>s.acc.diasBase?' <span class="note" style="display:inline;">(progresivo)</span>':'')+'</td>'+
         '<td class="num">'+fmt1(row.tomados)+'</td>'+
         '<td class="num"><span class="badge '+pendClass+'">'+fmt1(row.pendiente)+'</span></td>'+
       '</tr>';
@@ -1552,7 +1574,7 @@
         '</p>'
       : "";
     var canModifyDates = !!(currentUser && currentUser.role === "admin");
-    var periodoYearLabel = computePeriodoYearLabels(emp);
+    var periodoYearLabel = computePeriodoYearLabels(emp, activeCenterKey());
     var periodosRows = emp.periodos.length
       ? emp.periodos.map(function(p){
           var dias = countBusinessDays(p.inicio, p.fin);
@@ -1787,7 +1809,7 @@
   function abrirComprobante(emp, periodo, centroKey){
     var folio = assignComprobanteFolio(emp, periodo, centroKey);
     var dias = countBusinessDays(periodo.inicio, periodo.fin);
-    var anioLabel = computePeriodoYearLabels(emp)[periodo.id] || "";
+    var anioLabel = computePeriodoYearLabels(emp, centroKey)[periodo.id] || "";
     var win = window.open("", "_blank");
     if (!win){
       alert("El comprobante fue generado (folio " + folio + ") pero el navegador bloqueó la ventana emergente. Habilita las ventanas emergentes para este sitio e intenta nuevamente con el botón \"Comprobante\".");
@@ -1900,15 +1922,14 @@
   }
 
   // ---------- Cartola de vacaciones (resumen individual para entregar al colaborador) ----------
-  var DIAS_BASE_ANUAL = 15; // base legal (art. 67° Código del Trabajo); el excedente es feriado progresivo (art. 68°)
   function abrirCartola(emp){
-    var s = employeeSummary(emp);
+    var s = employeeSummary(emp, activeCenterKey());
     var bal = computeYearBalances(emp, s.acc);
     var rows = bal.completed.filter(function(r){ return r.pendiente > 0.05; });
     var showCurrent = bal.current.saldo > 0.05;
     var rowHtml = function(year, ent, tomados, saldo, ventana, esActual){
-      var normales = Math.min(ent, DIAS_BASE_ANUAL);
-      var progresivos = Math.max(0, ent - DIAS_BASE_ANUAL);
+      var normales = Math.min(ent, s.acc.diasBase);
+      var progresivos = Math.max(0, ent - s.acc.diasBase);
       return '<tr><td>Año '+year+(esActual?' (en curso)':'')+'<div style="font-size:11.5px;color:#666;">'+fmtDate(ventana.inicio)+' → '+fmtDate(ventana.fin)+'</div></td>'+
         '<td class="num">'+normales+'</td>'+
         '<td class="num">'+progresivos+'</td>'+
@@ -2377,7 +2398,7 @@
     var header = ["Nombre","Cargo","Fecha ingreso","Antiguedad (meses)","Dias por año vigentes","Dias devengados","Dias usados","Saldo"];
     var lines = [header.join(";")];
     activeCenterEmployees().forEach(function(emp){
-      var s = employeeSummary(emp);
+      var s = employeeSummary(emp, activeCenterKey());
       lines.push([
         '"'+emp.nombre.replace(/"/g,'""')+'"',
         '"'+(emp.cargo||"").replace(/"/g,'""')+'"',
@@ -2517,6 +2538,10 @@
             '<div class="note" style="margin:2px 0 0;font-weight:400;">'+count+' colaborador(es) · key: '+escapeHtml(c.key)+
               ' · prefijo de folio: <input type="text" class="centro-edit-folio" data-centro="'+c.key+'" value="'+escapeHtml(c.folioPrefix||"")+'" maxlength="6" style="width:60px;font:inherit;font-weight:600;text-transform:uppercase;border:1px solid var(--border);border-radius:6px;padding:2px 6px;">'+
             '</div>'+
+            '<label class="note" style="margin:4px 0 0;font-weight:400;display:flex;align-items:center;gap:5px;">'+
+              '<input type="checkbox" class="centro-edit-zona-extrema" data-centro="'+c.key+'" style="width:auto;"'+(c.zonaExtrema?' checked':'')+'>'+
+              'Zona extrema (Art. 67°, feriado de 20 días hábiles)'+
+            '</label>'+
           '</span>'+
           '<span class="op-row-actions">'+
             '<button class="small ghost" data-centro-action="save" data-centro="'+c.key+'">Guardar</button>'+
@@ -2562,6 +2587,10 @@
           '</label>'+
           '<label class="field">Key'+
             '<input type="text" class="centro-new-key" data-empresa="'+emp.key+'" placeholder="Ej: bodega_norte">'+
+          '</label>'+
+          '<label class="field" style="flex-direction:row;align-items:center;gap:6px;">'+
+            '<input type="checkbox" class="centro-new-zona-extrema" data-empresa="'+emp.key+'" style="width:auto;">'+
+            '<span style="font-size:12.5px;color:var(--text-secondary);">Zona extrema (20 días)</span>'+
           '</label>'+
           '<button class="small primary" data-centro-action="add" data-empresa="'+emp.key+'" style="align-self:flex-end;">+ Agregar centro</button>'+
         '</div>'+
@@ -2630,13 +2659,19 @@
       var empKeyForNew = centroBtn.getAttribute("data-empresa");
       var nombreI = document.querySelector('.centro-new-nombre[data-empresa="'+empKeyForNew+'"]');
       var keyI = document.querySelector('.centro-new-key[data-empresa="'+empKeyForNew+'"]');
+      var zonaExtremaI = document.querySelector('.centro-new-zona-extrema[data-empresa="'+empKeyForNew+'"]');
       var cNombre = nombreI.value.trim();
       var cKeyRaw = keyI.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
       if (!cNombre || !cKeyRaw){ errEl.textContent = "Completa el nombre y la key del nuevo centro."; errEl.hidden = false; return; }
       if (state.centrosDef.some(function(c){ return c.key === cKeyRaw; })){ errEl.textContent = "Ya existe un centro con esa key."; errEl.hidden = false; return; }
       // El prefijo de folio se sugiere automáticamente a partir del nombre; queda editable desde
       // la fila del centro recién creado (campo "prefijo de folio") por si el usuario prefiere otro.
-      state.centrosDef.push({ key: cKeyRaw, nombre: cNombre, empresaKey: empKeyForNew, folioPrefix: deriveFolioPrefix(cNombre) });
+      // "Zona extrema" (20 días hábiles en vez de 15, art. 67° inciso 2°) también se puede marcar
+      // desde ya, o activarse/desactivarse después desde la fila del centro.
+      state.centrosDef.push({
+        key: cKeyRaw, nombre: cNombre, empresaKey: empKeyForNew, folioPrefix: deriveFolioPrefix(cNombre),
+        zonaExtrema: !!(zonaExtremaI && zonaExtremaI.checked)
+      });
       state.centers[cKeyRaw] = { nombre: cNombre, employees: [], nextComprobanteFolio: 1 };
       localDirty.centrosDef = true;
       persistState();
@@ -2648,12 +2683,17 @@
     if (cAction === "save"){
       var editInput = document.querySelector('.centro-edit-nombre[data-centro="'+cKey+'"]');
       var folioInput = document.querySelector('.centro-edit-folio[data-centro="'+cKey+'"]');
+      var zonaExtremaInput = document.querySelector('.centro-edit-zona-extrema[data-centro="'+cKey+'"]');
       var nuevoNombreCentro = editInput.value.trim();
       if (!nuevoNombreCentro){ errEl.textContent = "El nombre del centro no puede quedar vacío."; errEl.hidden = false; return; }
       var nuevoFolioPrefix = folioInput.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
       if (!nuevoFolioPrefix){ errEl.textContent = "El prefijo de folio no puede quedar vacío."; errEl.hidden = false; return; }
       var cdef = state.centrosDef.filter(function(c){ return c.key === cKey; })[0];
-      if (cdef){ cdef.nombre = nuevoNombreCentro; cdef.folioPrefix = nuevoFolioPrefix; }
+      if (cdef){
+        cdef.nombre = nuevoNombreCentro;
+        cdef.folioPrefix = nuevoFolioPrefix;
+        cdef.zonaExtrema = !!(zonaExtremaInput && zonaExtremaInput.checked);
+      }
       if (state.centers[cKey]) state.centers[cKey].nombre = nuevoNombreCentro;
       localDirty.centrosDef = true;
       persistState();
