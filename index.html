@@ -1487,14 +1487,19 @@
   function computeYearBalances(emp, acc){
     var poolTomados = totalDiasTomados(emp);
     var completed = [];
-    for (var y = 1; y <= Math.max(acc.yearsCompleted, 1); y++){
+    // Ojo: el límite del loop es `acc.yearsCompleted` a secas (NO Math.max(acc.yearsCompleted, 1)).
+    // Un colaborador que todavía no cumple su primer año (yearsCompleted = 0) no tiene ningún año
+    // "completado" que listar aquí — su único año vigente es el "en curso" (`current`, más abajo).
+    // Forzar al menos 1 iteración generaba una fila "Año 1" fantasma (año completo hipotético)
+    // duplicada con la fila real "Año 1 (en curso)", con la misma ventana de fechas pero saldos
+    // distintos — justo el problema reportado en una cartola real.
+    for (var y = 1; y <= acc.yearsCompleted; y++){
       var ent = entitlementForYear(y, acc.threshold, acc.diasBase);
       var ventana = yearWindow(emp.fechaIngreso, y);
       var tomadosVentana = Math.min(Math.max(poolTomados, 0), ent);
       poolTomados -= tomadosVentana;
       var pendienteVentana = ent - tomadosVentana;
       completed.push({ year: y, ent: ent, tomados: tomadosVentana, pendiente: pendienteVentana, ventana: ventana });
-      if (y > acc.yearsCompleted) break;
     }
     var ventanaActual = yearWindow(emp.fechaIngreso, acc.yearsCompleted + 1);
     var tomadosActual = Math.max(poolTomados, 0);
