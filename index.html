@@ -956,7 +956,11 @@
   // sobrescriben con la copia local al fusionar; el resto siempre toma la versión más reciente
   // del remoto, para no pisar cambios de otro administrador con una copia local desactualizada
   // (por ejemplo, la URL del script de aviso por correo desapareciendo tras sincronizar).
-  var localDirty = { admins: false, operators: false, settings: false, customHolidays: false, disabledHolidays: false, empresas: false, centrosDef: false };
+  // `centers` es un mapa { centroKey: true } — a diferencia de los demás campos (booleanos
+  // globales), un dispositivo puede tener ediciones pendientes en varios centros a la vez (por
+  // ejemplo, al mover un colaborador entre dos centros, o al importar un respaldo JSON que toca
+  // varios centros de una vez), así que se rastrea por clave en lugar de un único booleano.
+  var localDirty = { admins: false, operators: false, settings: false, customHolidays: false, disabledHolidays: false, empresas: false, centrosDef: false, centers: {} };
   var IDB_NAME = "control_vacaciones_db", IDB_STORE = "kv";
   var SYNC_FILENAME = "control_vacaciones_sync.json";
 
@@ -1005,6 +1009,16 @@
     persistState();
     renderApp();
   }
+  // Marca un centro como "con ediciones locales pendientes de sincronizar" — debe llamarse en
+  // CADA sitio donde se modifican los datos de un centro (colaboradores, periodos, folios), justo
+  // antes u junto con onDataChanged(). Ver overlayMergeAuthoritative: solo los centros marcados
+  // aquí se sobrescriben con la copia local al fusionar con el remoto; el resto siempre toma la
+  // versión recién leída del remoto, para no revivir una copia local desactualizada (por ejemplo,
+  // la de un dispositivo que no ha abierto la app hace días) sobre cambios más recientes hechos
+  // por otro usuario desde otro dispositivo.
+  function markCenterDirty(key){
+    if (key) localDirty.centers[key] = true;
+  }
 
   function overlayMergeAuthoritative(mergedBase){
     // Sobrescribe solo las secciones sobre las que el usuario actual tiene autoridad,
@@ -1014,10 +1028,24 @@
     // contrario se conserva la versión recién leída del remoto, que siempre es al menos igual
     // de reciente. Esto evita que una copia local desactualizada borre, por ejemplo, la URL del
     // script guardada por otro administrador desde otro computador.
+    // IMPORTANTE: la copia LOCAL de un centro solo se usa si este dispositivo realmente tiene
+    // ediciones pendientes en ese centro (localDirty.centers[key], marcado por markCenterDirty).
+    // Antes se sobrescribía SIEMPRE con la copia local (todos los centros del operador, o solo la
+    // pestaña activa del administrador) sin verificar si esa copia local tenía algo nuevo que
+    // aportar. Eso causaba pérdida silenciosa de datos: si el dispositivo llevaba un rato sin
+    // usarse (copia local desactualizada) y mientras tanto OTRO usuario agregaba colaboradores a
+    // ese mismo centro desde otro dispositivo, cada sincronización/consulta de este dispositivo
+    // volvía a pisar la versión remota (recién leída, con los colaboradores nuevos) con la copia
+    // local vieja — y además el reloj (`updatedAt`) quedaba igualado al del remoto, por lo que la
+    // app creía estar al día y jamás volvía a traer los datos nuevos hasta una importación manual.
     if (currentUser && currentUser.role === "operator"){
-      (currentUser.centros || []).forEach(function(k){ mergedBase.centers[k] = state.centers[k]; });
+      (currentUser.centros || []).forEach(function(k){
+        if (localDirty.centers[k]) mergedBase.centers[k] = state.centers[k];
+      });
     } else if (currentUser && currentUser.role === "admin"){
-      mergedBase.centers[uiAdminActiveCenter] = state.centers[uiAdminActiveCenter];
+      Object.keys(localDirty.centers).forEach(function(k){
+        if (localDirty.centers[k]) mergedBase.centers[k] = state.centers[k];
+      });
       if (localDirty.admins) mergedBase.admins = state.admins;
       if (localDirty.operators) mergedBase.operators = state.operators;
       if (localDirty.customHolidays) mergedBase.customHolidays = state.customHolidays;
@@ -1106,6 +1134,9 @@
     // tiene éxito, solo se limpian estas (una edición nueva que llegue mientras el archivo se
     // escribe no debe darse por sincronizada todavía).
     var dirtySnapshot = { admins: localDirty.admins, operators: localDirty.operators, settings: localDirty.settings, customHolidays: localDirty.customHolidays, disabledHolidays: localDirty.disabledHolidays, empresas: localDirty.empresas, centrosDef: localDirty.centrosDef };
+    // Instantánea de qué centros están sucios, por la misma razón (evitar dar por sincronizado un
+    // centro que reciba una edición nueva justo mientras se está escribiendo el archivo remoto).
+    var dirtyCentersSnapshot = Object.keys(localDirty.centers).filter(function(k){ return localDirty.centers[k]; });
     return readSyncFile().then(function(text){
       var remoteRaw = null;
       if (text){ try { remoteRaw = JSON.parse(text); } catch(e){ remoteRaw = null; } }
@@ -1115,6 +1146,7 @@
         state = merged;
         if (idbSupported()) idbSet("appState", state).catch(function(){});
         Object.keys(dirtySnapshot).forEach(function(k){ if (dirtySnapshot[k]) localDirty[k] = false; });
+        dirtyCentersSnapshot.forEach(function(k){ delete localDirty.centers[k]; });
       });
     }).then(function(){
       syncInfo = { state: "synced", time: new Date(), message: "" };
@@ -1780,6 +1812,7 @@
       periodo.comprobanteFolio = centerFolioPrefix(centroKey) + "-" + String(n).padStart(4, "0");
       periodo.comprobanteEmitidoEn = new Date().toISOString();
       center.nextComprobanteFolio = n + 1;
+      markCenterDirty(centroKey);
       onDataChanged();
     }
     return periodo.comprobanteFolio;
@@ -2089,6 +2122,7 @@
         if (emp && confirm('¿Eliminar a "'+emp.nombre+'"? Esta acción no se puede deshacer.')){
           state.centers[activeCenterKey()].employees = employees.filter(function(x){ return x.id !== id; });
           if (uiSelectedEmployee === id) uiSelectedEmployee = null;
+          markCenterDirty(activeCenterKey());
           onDataChanged();
         }
         return;
@@ -2108,6 +2142,7 @@
         var emp2 = employees.filter(function(x){ return x.id === empId; })[0];
         var nuevoPeriodo = { id: uid(), inicio: inicio, fin: fin, nota: nota };
         emp2.periodos.push(nuevoPeriodo);
+        markCenterDirty(activeCenterKey());
         onDataChanged();
         var centroKeyNuevo = activeCenterKey();
         if (currentUser && currentUser.role === "operator"){
@@ -2128,6 +2163,7 @@
         if (!(currentUser && currentUser.role === "admin") && perToRemove && perToRemove.comprobanteFolio) return;
         emp3.periodos = emp3.periodos.filter(function(p){ return p.id !== perId; });
         if (uiEditingPeriodo && uiEditingPeriodo.periodoId === perId) uiEditingPeriodo = null;
+        markCenterDirty(activeCenterKey());
         onDataChanged();
         return;
       }
@@ -2168,6 +2204,7 @@
         var per4 = emp4 ? emp4.periodos.filter(function(p){ return p.id === perId4; })[0] : null;
         if (per4){ per4.inicio = inicio4; per4.fin = fin4; per4.nota = nota4; }
         uiEditingPeriodo = null;
+        markCenterDirty(activeCenterKey());
         onDataChanged();
         return;
       }
@@ -2211,6 +2248,7 @@
       employees.push({ id: uid(), nombre: nombre, cargo: cargo, rut: rut, fechaIngreso: fecha, aniosServiciosAnteriores: aniosAnteriores, periodos: [] });
     }
     document.getElementById("empOverlay").hidden = true;
+    markCenterDirty(activeCenterKey());
     onDataChanged();
   });
 
@@ -2252,6 +2290,10 @@
     if (uiSelectedEmployee === moveEmployeeId) uiSelectedEmployee = null;
     moveEmployeeId = null;
     document.getElementById("moveOverlay").hidden = true;
+    // Se mueven datos de DOS centros a la vez (se quita de uno, se agrega al otro) — ambos deben
+    // marcarse como con ediciones pendientes, no solo el que estaba activo en la pestaña.
+    markCenterDirty(origen);
+    markCenterDirty(target);
     onDataChanged();
   });
 
@@ -2386,6 +2428,9 @@
                 ? incoming.nextComprobanteFolio
                 : ((state.centers[c.key] && state.centers[c.key].nextComprobanteFolio) || 1)
             };
+            // Una importación puede tocar VARIOS centros a la vez (no solo la pestaña activa) —
+            // todos deben quedar marcados para que la siguiente sincronización los suba de vuelta.
+            markCenterDirty(c.key);
           }
         });
         if (raw.customHolidays){ state.customHolidays = normalized.customHolidays; localDirty.customHolidays = true; }
@@ -2506,9 +2551,11 @@
       if (currentUser.role === "admin"){
         var adm = getAdminById(currentUser.id);
         if (adm) adm.pinHash = hash;
+        localDirty.admins = true;
       } else {
         var op = getOperatorById(currentUser.id);
         if (op) op.pinHash = hash;
+        localDirty.operators = true;
       }
       document.getElementById("pinOverlay").hidden = true;
       onDataChanged();
