@@ -792,9 +792,25 @@
     var centers = {};
     centrosDef.forEach(function(c){
       var existing = raw.centers && raw.centers[c.key];
+      var rawEmployees = (existing && Array.isArray(existing.employees)) ? existing.employees : [];
       centers[c.key] = {
         nombre: c.nombre,
-        employees: (existing && Array.isArray(existing.employees)) ? existing.employees : [],
+        // Firebase Realtime Database no guarda arreglos/objetos vacíos: si un colaborador nunca
+        // registró vacaciones, su campo `periodos: []` se sube así, pero al guardarse en Firebase
+        // ese arreglo vacío desaparece del árbol por completo (queda "undefined", no "[]"). Sin
+        // esta normalización, cualquier colaborador recién ingresado (sin vacaciones aún) rompía
+        // silenciosamente el cálculo de saldos y el informe mensual con un error de JavaScript no
+        // capturado ("Cannot read properties of undefined (reading 'forEach')"), lo que dejaba la
+        // pantalla congelada mostrando el último centro que sí se pudo renderizar — pareciendo que
+        // sus colaboradores se habían "borrado", cuando en realidad seguían intactos en la base.
+        employees: rawEmployees.map(function(emp){
+          return {
+            id: emp.id, nombre: emp.nombre, cargo: emp.cargo || "", rut: emp.rut || "",
+            fechaIngreso: emp.fechaIngreso,
+            aniosServiciosAnteriores: typeof emp.aniosServiciosAnteriores === "number" ? emp.aniosServiciosAnteriores : 0,
+            periodos: Array.isArray(emp.periodos) ? emp.periodos : []
+          };
+        }),
         nextComprobanteFolio: (existing && typeof existing.nextComprobanteFolio === "number") ? existing.nextComprobanteFolio : 1
       };
     });
