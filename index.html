@@ -250,27 +250,21 @@
   .operator-row .op-row-user { font-weight:600; overflow-wrap:anywhere; }
   .operator-row .op-row-actions { display:flex; gap:4px; flex-wrap:nowrap; flex:none; }
 </style>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 </head>
 <body>
 <div class="wrap">
 
   <div class="sync-bar" id="globalSyncBar"></div>
 
-  <!-- Pantalla: conectar con Google Drive -->
+  <!-- Pantalla: conectando a la base de datos en tiempo real (sin botones — la conexión es automática) -->
   <div class="auth-screen" id="screenConnect" hidden>
     <div class="auth-card">
       <h2>Control de Vacaciones — Multi Centro</h2>
-      <p class="sub">Esta app comparte los datos de los 4 centros de negocio (Administración, Talca, Los Ángeles y Aserradero) a
-        través de Google Drive. Inicia sesión con tu cuenta de Google (@preserva.cl) para continuar.</p>
-      <div class="actions">
-        <button class="primary" id="btnConnectFolder">Conectar con Google</button>
-        <button class="ghost small" id="btnConnectSkip">Continuar sin conectar (modo local, sin sincronizar)</button>
-      </div>
-      <p class="note">Si eres el administrador y es la primera vez que configuras esto, primero crea (o elige) una Unidad
-        compartida de Google Drive donde vivirán los datos de todos los centros, y compártela con las cuentas @preserva.cl
-        que deban tener acceso. Esta app se conecta a esa Unidad compartida con tu propia sesión de Google — no se pide
-        ninguna contraseña dentro de la aplicación.</p>
+      <p class="sub">Conectando en tiempo real con los datos compartidos de todos los centros de negocio…</p>
+      <p class="note" id="screenConnectError" hidden></p>
     </div>
   </div>
 
@@ -382,8 +376,9 @@
       se sigue sumando igual encima de esa base. Se activa por centro en "Gestionar empresas y centros".
       Cada centro de negocio solo es accesible por su operador autorizado; un administrador ve y edita los centros de las empresas que
       tiene asignadas (o todos, si es administrador Holding-wide). El acceso por usuario/PIN es un control práctico para uso diario del equipo — al ser una app sin servidor,
-      no equivale a seguridad de nivel empresarial. Los datos se sincronizan entre computadores a través de la carpeta compartida de Drive
-      (barra superior) cada ~20 segundos; evita que dos personas editen el mismo centro exactamente al mismo tiempo para prevenir choques.
+      no equivale a seguridad de nivel empresarial. Los datos se sincronizan entre computadores <strong>en tiempo real</strong> a través de
+      una base de datos en la nube (indicador de estado en la barra superior); cada cambio se guarda de inmediato y se refleja al instante en
+      todos los computadores conectados, sin necesidad de recargar ni esperar.
     </div>
 
   </div>
@@ -851,7 +846,6 @@
   var uiEditingEmployeeId = null;
   var uiEditingPeriodo = null;      // { empId, periodoId } - edición de fechas de un periodo (solo admin/superadmin)
   var uiRefDate = todayISO();       // parámetro local de vista, no se sincroniza
-  var skippedConnect = false;       // el usuario eligió continuar sin conectar la carpeta compartida
 
   // ---------- PIN hashing (control práctico, no seguridad de nivel empresarial) ----------
   function hashPin(pin){
@@ -931,41 +925,33 @@
     return e ? (e.logoUrl || "") : "";
   }
 
-  // ---------- Persistencia local (IndexedDB) + sincronización vía Google Drive ----------
-  // El archivo compartido vive en una Unidad compartida de Google Drive; cada computador se
-  // conecta con la cuenta de Google (@preserva.cl) de quien lo configure, vía Google Identity
-  // Services (ventana emergente de Google, sin contraseñas dentro de esta app). El token de
-  // acceso es de corta duración y vive solo en memoria (nunca se guarda en disco); lo único que
-  // se recuerda entre sesiones es el ID del archivo de datos dentro de la Unidad compartida.
-  var GOOGLE_CLIENT_ID = "97669232901-tg9cucsp9eef9o4bjaiup8uopps9f1pl.apps.googleusercontent.com";
-  var GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
-  var GOOGLE_SHARED_DRIVE_ID = "0AHFssPLi4vz9Uk9PVA";
-  var DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
-  var DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
+  // ---------- Persistencia local (IndexedDB, como caché) + sincronización en vivo vía Firebase Realtime Database ----------
+  // Los datos viven en Firebase Realtime Database: cada dispositivo se conecta de forma anónima
+  // (sin pedir cuenta ni contraseña — el usuario/PIN de la app es un control aparte, por encima
+  // de esto) y mantiene una escucha en vivo sobre el árbol completo, así que cualquier cambio
+  // hecho por cualquier otro dispositivo aparece al instante, sin sondear cada cierto tiempo.
+  // Cada edición se escribe únicamente en su propia rama (por centro, o por sección global como
+  // admins/operators/empresas/etc.), nunca reescribiendo el árbol completo — así dos ediciones
+  // en partes distintas del árbol nunca pueden pisarse entre sí.
+  var FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDbfO7-wdbhRYtewTaOo98PXg9ExuXZYnA",
+    authDomain: "control-vacaciones-1dc79.firebaseapp.com",
+    databaseURL: "https://control-vacaciones-1dc79-default-rtdb.firebaseio.com",
+    projectId: "control-vacaciones-1dc79",
+    storageBucket: "control-vacaciones-1dc79.firebasestorage.app",
+    messagingSenderId: "707270364743",
+    appId: "1:707270364743:web:0a47b047cdd6d482e2eb62"
+  };
 
-  var driveAccessToken = null;   // token de acceso vigente (en memoria, nunca persistido)
-  var driveTokenClient = null;   // cliente de Google Identity Services (se crea una sola vez)
-  var driveFileId = null;        // ID del archivo de datos dentro de la Unidad compartida (persistido)
-  var driveConnecting = false;   // evita solicitudes de token duplicadas mientras una está en curso
-  var syncInfo = { state: "off", time: null, message: "" }; // off|connecting|synced|needs-permission|error
-  var syncTimer = null;
-  var pollIntervalId = null;
-  var tokenRefreshTimer = null;
-  // Secciones "globales" (compartidas por todos los centros) que este dispositivo modificó
-  // localmente y aún no confirmó como escritas en el archivo remoto. Solo estas secciones se
-  // sobrescriben con la copia local al fusionar; el resto siempre toma la versión más reciente
-  // del remoto, para no pisar cambios de otro administrador con una copia local desactualizada
-  // (por ejemplo, la URL del script de aviso por correo desapareciendo tras sincronizar).
-  // `centers` es un mapa { centroKey: true } — a diferencia de los demás campos (booleanos
-  // globales), un dispositivo puede tener ediciones pendientes en varios centros a la vez (por
-  // ejemplo, al mover un colaborador entre dos centros, o al importar un respaldo JSON que toca
-  // varios centros de una vez), así que se rastrea por clave en lugar de un único booleano.
-  var localDirty = { admins: false, operators: false, settings: false, customHolidays: false, disabledHolidays: false, empresas: false, centrosDef: false, centers: {} };
+  var fbApp = null, fbAuth = null, fbDb = null, fbRootRef = null;
+  var rtdbConnecting = false;    // evita intentos de conexión duplicados mientras uno está en curso
+  var rtdbReady = false;         // true una vez que llegó el primer snapshot en vivo
+  var haveUsableState = false;   // true si ya hay algo que mostrar (copia local en caché, o ya conectado)
+  var syncInfo = { state: "off", time: null, message: "" }; // off|connecting|synced|error
   var IDB_NAME = "control_vacaciones_db", IDB_STORE = "kv";
-  var SYNC_FILENAME = "control_vacaciones_sync.json";
 
   function idbSupported(){ return typeof indexedDB !== "undefined"; }
-  function gsiSupported(){ return typeof google !== "undefined" && google.accounts && google.accounts.oauth2; }
+  function firebaseSdkSupported(){ return typeof firebase !== "undefined" && firebase.initializeApp; }
 
   function openIDB(){
     return new Promise(function(resolve, reject){
@@ -1003,289 +989,106 @@
   function persistState(){
     state.updatedAt = new Date().toISOString();
     if (idbSupported()) idbSet("appState", state).catch(function(){});
-    scheduleSync();
   }
   function onDataChanged(){
     persistState();
     renderApp();
   }
-  // Marca un centro como "con ediciones locales pendientes de sincronizar" — debe llamarse en
-  // CADA sitio donde se modifican los datos de un centro (colaboradores, periodos, folios), justo
-  // antes u junto con onDataChanged(). Ver overlayMergeAuthoritative: solo los centros marcados
-  // aquí se sobrescriben con la copia local al fusionar con el remoto; el resto siempre toma la
-  // versión recién leída del remoto, para no revivir una copia local desactualizada (por ejemplo,
-  // la de un dispositivo que no ha abierto la app hace días) sobre cambios más recientes hechos
-  // por otro usuario desde otro dispositivo.
-  function markCenterDirty(key){
-    if (key) localDirty.centers[key] = true;
-  }
 
-  function overlayMergeAuthoritative(mergedBase){
-    // Sobrescribe solo las secciones sobre las que el usuario actual tiene autoridad,
-    // conservando lo remoto para el resto (para no pisar cambios de otros centros).
-    // Para las secciones "globales" (admins/operators/settings/feriados), solo se sobrescriben
-    // con la copia local si ESTE dispositivo las modificó realmente (ver localDirty) — de lo
-    // contrario se conserva la versión recién leída del remoto, que siempre es al menos igual
-    // de reciente. Esto evita que una copia local desactualizada borre, por ejemplo, la URL del
-    // script guardada por otro administrador desde otro computador.
-    // IMPORTANTE: la copia LOCAL de un centro solo se usa si este dispositivo realmente tiene
-    // ediciones pendientes en ese centro (localDirty.centers[key], marcado por markCenterDirty).
-    // Antes se sobrescribía SIEMPRE con la copia local (todos los centros del operador, o solo la
-    // pestaña activa del administrador) sin verificar si esa copia local tenía algo nuevo que
-    // aportar. Eso causaba pérdida silenciosa de datos: si el dispositivo llevaba un rato sin
-    // usarse (copia local desactualizada) y mientras tanto OTRO usuario agregaba colaboradores a
-    // ese mismo centro desde otro dispositivo, cada sincronización/consulta de este dispositivo
-    // volvía a pisar la versión remota (recién leída, con los colaboradores nuevos) con la copia
-    // local vieja — y además el reloj (`updatedAt`) quedaba igualado al del remoto, por lo que la
-    // app creía estar al día y jamás volvía a traer los datos nuevos hasta una importación manual.
-    if (currentUser && currentUser.role === "operator"){
-      (currentUser.centros || []).forEach(function(k){
-        if (localDirty.centers[k]) mergedBase.centers[k] = state.centers[k];
-      });
-    } else if (currentUser && currentUser.role === "admin"){
-      Object.keys(localDirty.centers).forEach(function(k){
-        if (localDirty.centers[k]) mergedBase.centers[k] = state.centers[k];
-      });
-      if (localDirty.admins) mergedBase.admins = state.admins;
-      if (localDirty.operators) mergedBase.operators = state.operators;
-      if (localDirty.customHolidays) mergedBase.customHolidays = state.customHolidays;
-      if (localDirty.disabledHolidays) mergedBase.disabledHolidays = state.disabledHolidays;
-      if (localDirty.settings) mergedBase.settings = state.settings;
-      if (localDirty.empresas) mergedBase.empresas = state.empresas;
-      if (localDirty.centrosDef){
-        mergedBase.centrosDef = state.centrosDef;
-        // Si este dispositivo creó/eliminó centros localmente, el remoto (todavía desactualizado)
-        // puede no traer la entrada de datos (empleados/folio) para un centro nuevo: se completa
-        // con la copia local para no perder la referencia recién creada.
-        mergedBase.centrosDef.forEach(function(c){
-          if (!mergedBase.centers[c.key]) mergedBase.centers[c.key] = state.centers[c.key] || { nombre: c.nombre, employees: [], nextComprobanteFolio: 1 };
-        });
-      }
-    } else {
-      // Sin sesión (asistente de configuración inicial): usar el estado local completo.
-      return normalizeState(state);
-    }
-    return mergedBase;
-  }
-
-  function scheduleSync(){
-    if (!driveFileId || !driveAccessToken) return;
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(doSync, 500);
-  }
-
-  // ---- Llamadas a la API de Google Drive (fetch autenticado con el token de acceso vigente) ----
-  function driveApiFetch(url, opts){
-    opts = opts || {};
-    var headers = opts.headers || {};
-    headers["Authorization"] = "Bearer " + driveAccessToken;
-    return fetch(url, { method: opts.method || "GET", headers: headers, body: opts.body }).then(function(res){
-      if (res.status === 401){
-        var authErr = new Error("La sesión de Google expiró.");
-        authErr.name = "AuthError";
-        throw authErr;
-      }
-      if (!res.ok){
-        return res.text().then(function(t){
-          throw new Error("Error de Google Drive (" + res.status + "): " + t.slice(0, 200));
-        });
-      }
-      return res;
-    });
-  }
-  function readSyncFile(){
-    return driveApiFetch(DRIVE_API_BASE + "/files/" + driveFileId + "?alt=media&supportsAllDrives=true").then(function(res){
-      return res.text();
-    });
-  }
-  function writeSyncFile(obj){
-    return driveApiFetch(DRIVE_UPLOAD_BASE + "/files/" + driveFileId + "?uploadType=media&supportsAllDrives=true", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(obj, null, 2)
-    });
-  }
-  function findOrCreateSyncFile(){
-    var q = "name = '" + SYNC_FILENAME + "' and '" + GOOGLE_SHARED_DRIVE_ID + "' in parents and trashed = false";
-    var listUrl = DRIVE_API_BASE + "/files?q=" + encodeURIComponent(q) +
-      "&fields=" + encodeURIComponent("files(id,name)") +
-      "&corpora=drive&driveId=" + GOOGLE_SHARED_DRIVE_ID +
-      "&includeItemsFromAllDrives=true&supportsAllDrives=true";
-    return driveApiFetch(listUrl).then(function(res){ return res.json(); }).then(function(data){
-      if (data.files && data.files.length) return data.files[0].id;
-      // No existe todavía en la Unidad compartida: este dispositivo crea el archivo inicial
-      // con el estado local actual (normalmente vacío, la primera vez que se usa la app).
-      var metadata = { name: SYNC_FILENAME, parents: [GOOGLE_SHARED_DRIVE_ID], mimeType: "application/json" };
-      var boundary = "vacacionesboundary" + uid();
-      var body = "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) +
-        "\r\n--" + boundary + "\r\nContent-Type: application/json\r\n\r\n" + JSON.stringify(normalizeState(state)) +
-        "\r\n--" + boundary + "--";
-      return driveApiFetch(DRIVE_UPLOAD_BASE + "/files?uploadType=multipart&supportsAllDrives=true", {
-        method: "POST",
-        headers: { "Content-Type": "multipart/related; boundary=" + boundary },
-        body: body
-      }).then(function(res){ return res.json(); }).then(function(created){ return created.id; });
-    });
-  }
-
-  function doSync(){
-    if (!driveFileId || !driveAccessToken) return Promise.resolve();
-    // Instantánea de qué secciones locales están "sucias" en este momento: si la escritura
-    // tiene éxito, solo se limpian estas (una edición nueva que llegue mientras el archivo se
-    // escribe no debe darse por sincronizada todavía).
-    var dirtySnapshot = { admins: localDirty.admins, operators: localDirty.operators, settings: localDirty.settings, customHolidays: localDirty.customHolidays, disabledHolidays: localDirty.disabledHolidays, empresas: localDirty.empresas, centrosDef: localDirty.centrosDef };
-    // Instantánea de qué centros están sucios, por la misma razón (evitar dar por sincronizado un
-    // centro que reciba una edición nueva justo mientras se está escribiendo el archivo remoto).
-    var dirtyCentersSnapshot = Object.keys(localDirty.centers).filter(function(k){ return localDirty.centers[k]; });
-    return readSyncFile().then(function(text){
-      var remoteRaw = null;
-      if (text){ try { remoteRaw = JSON.parse(text); } catch(e){ remoteRaw = null; } }
-      var merged = overlayMergeAuthoritative(remoteRaw ? normalizeState(remoteRaw) : normalizeState(state));
-      merged.updatedAt = new Date().toISOString();
-      return writeSyncFile(merged).then(function(){
-        state = merged;
-        if (idbSupported()) idbSet("appState", state).catch(function(){});
-        Object.keys(dirtySnapshot).forEach(function(k){ if (dirtySnapshot[k]) localDirty[k] = false; });
-        dirtyCentersSnapshot.forEach(function(k){ delete localDirty.centers[k]; });
-      });
-    }).then(function(){
-      syncInfo = { state: "synced", time: new Date(), message: "" };
+  // ---- Escritura en Firebase: cada función escribe ÚNICAMENTE su propia rama del árbol, nunca
+  // el árbol completo. Como dos ediciones en ramas distintas no pueden pisarse entre sí, ya no
+  // hace falta ningún mecanismo de "fusión" ni de "banderas de cambios pendientes" — lo que antes
+  // resolvía overlayMergeAuthoritative/localDirty (ver historial) simplemente no puede volver a
+  // pasar con este modelo.
+  function fbSet(path, value){
+    if (!fbDb) return Promise.resolve();
+    return fbDb.ref(path).set(value === undefined ? null : value).catch(function(err){
+      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
       renderSyncBar();
-      renderApp();
-    }).catch(function(err){
-      handleSyncError(err);
     });
   }
-  function pollRemote(){
-    if (!driveFileId || !driveAccessToken) return;
-    readSyncFile().then(function(text){
-      var remote;
-      try { remote = JSON.parse(text); } catch(e){ return; }
-      if (remote && remote.updatedAt && (!state.updatedAt || remote.updatedAt > state.updatedAt)){
-        var merged = overlayMergeAuthoritative(normalizeState(remote));
-        state = merged;
-        if (idbSupported()) idbSet("appState", state).catch(function(){});
-        renderApp();
+  function syncCenter(key){ if (key) fbSet("centers/" + key, state.centers[key]); }
+  function syncAdmins(){ fbSet("admins", state.admins); }
+  function syncOperators(){ fbSet("operators", state.operators); }
+  function syncEmpresas(){ fbSet("empresas", state.empresas); }
+  function syncSettings(){ fbSet("settings", state.settings); }
+  function syncCustomHolidays(){ fbSet("customHolidays", state.customHolidays); }
+  function syncDisabledHolidays(){ fbSet("disabledHolidays", state.disabledHolidays); }
+  function syncCentrosDef(){
+    fbSet("centrosDef", state.centrosDef);
+    // Si se acaba de crear un centro nuevo, también hay que escribir su entrada de datos
+    // (empleados/folio) — recién nace y todavía no existe en el árbol remoto.
+    state.centrosDef.forEach(function(c){
+      if (state.centers[c.key] && !state.centers[c.key]._synced){
+        state.centers[c.key]._synced = true;
+        syncCenter(c.key);
       }
-      syncInfo = { state: "synced", time: new Date(), message: "" };
-      renderSyncBar();
-    }).catch(function(err){
-      handleSyncError(err);
     });
   }
-  function handleSyncError(err){
-    if (err && err.name === "AuthError"){
-      driveAccessToken = null;
-      syncInfo = { state: "needs-permission", time: syncInfo.time, message: "" };
+
+  // ---- Conexión a Firebase Realtime Database ----
+  function initFirebaseSync(){
+    if (rtdbConnecting || fbDb) return;
+    if (!firebaseSdkSupported()){
+      syncInfo = { state: "error", time: syncInfo.time, message: "Todavía se está cargando Firebase (revisa tu conexión a internet)." };
       renderSyncBar();
       return;
     }
-    syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
-    renderSyncBar();
-  }
-  function startPolling(){
-    if (pollIntervalId) return;
-    pollIntervalId = setInterval(pollRemote, 20000);
-    window.addEventListener("focus", function(){ if (driveFileId && driveAccessToken) pollRemote(); });
-    document.addEventListener("visibilitychange", function(){ if (!document.hidden && driveFileId && driveAccessToken) pollRemote(); });
-  }
-  function scheduleTokenRefresh(){
-    if (tokenRefreshTimer) return;
-    // Renueva el token de acceso antes de que expire (~1 hora), idealmente en silencio si la
-    // sesión de Google sigue activa en el navegador y ya se otorgó consentimiento antes.
-    tokenRefreshTimer = setInterval(function(){
-      if (driveFileId && gsiSupported()){
-        ensureDriveTokenClient();
-        driveTokenClient.requestAccessToken();
-      }
-    }, 45 * 60 * 1000);
-  }
-
-  function ensureDriveTokenClient(){
-    if (driveTokenClient) return;
-    driveTokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: GOOGLE_DRIVE_SCOPE,
-      callback: function(resp){
-        driveConnecting = false;
-        if (!resp || resp.error){
-          syncInfo = { state: "error", time: syncInfo.time, message: "No se pudo conectar con Google" + (resp && resp.error ? (": " + resp.error) : "") + "." };
-          renderSyncBar();
-          return;
-        }
-        driveAccessToken = resp.access_token;
-        var chain = driveFileId ? afterTokenReconnect() : afterTokenFirstConnect();
-        chain.catch(function(err){ handleSyncError(err); });
-      }
-    });
-  }
-  function afterTokenFirstConnect(){
-    return findOrCreateSyncFile().then(function(id){
-      driveFileId = id;
-      if (idbSupported()) idbSet("driveFileId", id).catch(function(){});
-      return readSyncFile();
-    }).then(function(text){
-      if (text){
-        var remote = null;
-        try { remote = JSON.parse(text); } catch(e){ remote = null; }
-        if (remote) state = normalizeState(remote);
-      }
-      if (idbSupported()) idbSet("appState", state).catch(function(){});
-      syncInfo = { state: "synced", time: new Date(), message: "" };
-      startPolling();
-      scheduleTokenRefresh();
-      renderApp();
-    });
-  }
-  function afterTokenReconnect(){
-    syncInfo = { state: "synced", time: syncInfo.time, message: "" };
-    startPolling();
-    scheduleTokenRefresh();
-    return pollRemote();
-  }
-
-  function connectGoogleDrive(){
-    if (!gsiSupported()){
-      alert("Todavía se está cargando el inicio de sesión de Google. Espera unos segundos e inténtalo de nuevo (revisa también tu conexión a internet).");
-      return;
-    }
-    if (driveConnecting) return;
-    driveConnecting = true;
+    rtdbConnecting = true;
     syncInfo = { state: "connecting", time: syncInfo.time, message: "" };
     renderSyncBar();
-    ensureDriveTokenClient();
-    driveTokenClient.requestAccessToken();
+    try {
+      fbApp = firebase.apps && firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(FIREBASE_CONFIG);
+      fbAuth = firebase.auth();
+      fbDb = firebase.database();
+    } catch (err){
+      rtdbConnecting = false;
+      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+      renderSyncBar();
+      return;
+    }
+    fbAuth.signInAnonymously().then(function(){
+      fbRootRef = fbDb.ref("/");
+      fbRootRef.on("value", function(snapshot){
+        rtdbConnecting = false;
+        var remote = snapshot.val();
+        state = remote ? normalizeState(remote) : defaultState();
+        if (idbSupported()) idbSet("appState", state).catch(function(){});
+        rtdbReady = true;
+        haveUsableState = true;
+        syncInfo = { state: "synced", time: new Date(), message: "" };
+        renderSyncBar();
+        renderApp();
+      }, function(err){
+        rtdbConnecting = false;
+        syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+        renderSyncBar();
+      });
+    }).catch(function(err){
+      rtdbConnecting = false;
+      syncInfo = { state: "error", time: syncInfo.time, message: (err && err.message) || String(err) };
+      renderSyncBar();
+    });
   }
-  function reauthorizeDrive(){
-    connectGoogleDrive();
+  function reconnectFirebase(){
+    fbDb = null; fbAuth = null; rtdbReady = false;
+    initFirebaseSync();
   }
 
   function renderSyncBar(){
     var host = document.getElementById("globalSyncBar");
     if (!host) return;
     var dot = "off", text = "", actions = "";
-    if (!gsiSupported()){
-      dot = "off";
-      text = "Inicio de sesión de Google todavía no está disponible (puede tardar unos segundos en cargar, o revisa tu conexión a internet).";
-    } else if (!driveFileId){
-      dot = "off";
-      text = "Sin conexión a Google Drive — los datos solo viven en este computador.";
-      actions = '<button class="small ghost" data-sync-action="connect">Conectar con Google</button>';
-    } else if (syncInfo.state === "synced"){
+    if (syncInfo.state === "synced"){
       dot = "ok";
-      text = "Sincronizado con Google Drive" + (syncInfo.time ? (" · " + fmtTime(syncInfo.time)) : "");
-      actions = '<button class="small ghost" data-sync-action="reauth">Reconectar</button>';
-    } else if (syncInfo.state === "needs-permission"){
-      dot = "warn";
-      text = "La sesión de Google expiró o fue revocada. Reconecta para seguir sincronizando.";
-      actions = '<button class="small ghost" data-sync-action="reauth">Reconectar con Google</button>';
+      text = "En tiempo real" + (syncInfo.time ? (" · última actualización " + fmtTime(syncInfo.time)) : "");
     } else if (syncInfo.state === "error"){
       dot = "err";
-      text = "Error de sincronización" + (syncInfo.message ? (": " + escapeHtml(syncInfo.message)) : "") + ".";
-      actions = '<button class="small ghost" data-sync-action="connect">Reintentar</button>';
+      text = "Sin conexión en tiempo real" + (syncInfo.message ? (": " + escapeHtml(syncInfo.message)) : "") + " — mostrando la última copia guardada en este computador.";
+      actions = '<button class="small ghost" data-sync-action="reconnect">Reintentar</button>';
     } else if (syncInfo.state === "connecting"){
       dot = "off";
-      text = "Conectando con Google…";
+      text = "Conectando…";
     } else {
       dot = "off";
       text = "Conectando…";
@@ -1296,13 +1099,7 @@
     var btn = e.target.closest("[data-sync-action]");
     if (!btn) return;
     var action = btn.getAttribute("data-sync-action");
-    if (action === "connect") connectGoogleDrive();
-    else if (action === "reauth") reauthorizeDrive();
-  });
-  document.getElementById("btnConnectFolder").addEventListener("click", connectGoogleDrive);
-  document.getElementById("btnConnectSkip").addEventListener("click", function(){
-    skippedConnect = true;
-    renderApp();
+    if (action === "reconnect") reconnectFirebase();
   });
 
   // ---------- Cálculo de feriados / días hábiles ----------
@@ -1812,7 +1609,7 @@
       periodo.comprobanteFolio = centerFolioPrefix(centroKey) + "-" + String(n).padStart(4, "0");
       periodo.comprobanteEmitidoEn = new Date().toISOString();
       center.nextComprobanteFolio = n + 1;
-      markCenterDirty(centroKey);
+      syncCenter(centroKey);
       onDataChanged();
     }
     return periodo.comprobanteFolio;
@@ -2122,7 +1919,7 @@
         if (emp && confirm('¿Eliminar a "'+emp.nombre+'"? Esta acción no se puede deshacer.')){
           state.centers[activeCenterKey()].employees = employees.filter(function(x){ return x.id !== id; });
           if (uiSelectedEmployee === id) uiSelectedEmployee = null;
-          markCenterDirty(activeCenterKey());
+          syncCenter(activeCenterKey());
           onDataChanged();
         }
         return;
@@ -2142,7 +1939,7 @@
         var emp2 = employees.filter(function(x){ return x.id === empId; })[0];
         var nuevoPeriodo = { id: uid(), inicio: inicio, fin: fin, nota: nota };
         emp2.periodos.push(nuevoPeriodo);
-        markCenterDirty(activeCenterKey());
+        syncCenter(activeCenterKey());
         onDataChanged();
         var centroKeyNuevo = activeCenterKey();
         if (currentUser && currentUser.role === "operator"){
@@ -2163,7 +1960,7 @@
         if (!(currentUser && currentUser.role === "admin") && perToRemove && perToRemove.comprobanteFolio) return;
         emp3.periodos = emp3.periodos.filter(function(p){ return p.id !== perId; });
         if (uiEditingPeriodo && uiEditingPeriodo.periodoId === perId) uiEditingPeriodo = null;
-        markCenterDirty(activeCenterKey());
+        syncCenter(activeCenterKey());
         onDataChanged();
         return;
       }
@@ -2204,7 +2001,7 @@
         var per4 = emp4 ? emp4.periodos.filter(function(p){ return p.id === perId4; })[0] : null;
         if (per4){ per4.inicio = inicio4; per4.fin = fin4; per4.nota = nota4; }
         uiEditingPeriodo = null;
-        markCenterDirty(activeCenterKey());
+        syncCenter(activeCenterKey());
         onDataChanged();
         return;
       }
@@ -2248,7 +2045,7 @@
       employees.push({ id: uid(), nombre: nombre, cargo: cargo, rut: rut, fechaIngreso: fecha, aniosServiciosAnteriores: aniosAnteriores, periodos: [] });
     }
     document.getElementById("empOverlay").hidden = true;
-    markCenterDirty(activeCenterKey());
+    syncCenter(activeCenterKey());
     onDataChanged();
   });
 
@@ -2292,8 +2089,8 @@
     document.getElementById("moveOverlay").hidden = true;
     // Se mueven datos de DOS centros a la vez (se quita de uno, se agrega al otro) — ambos deben
     // marcarse como con ediciones pendientes, no solo el que estaba activo en la pestaña.
-    markCenterDirty(origen);
-    markCenterDirty(target);
+    syncCenter(origen);
+    syncCenter(target);
     onDataChanged();
   });
 
@@ -2353,7 +2150,7 @@
       var date = t.getAttribute("data-hol-toggle");
       var idx = state.disabledHolidays.indexOf(date);
       if (idx === -1) state.disabledHolidays.push(date); else state.disabledHolidays.splice(idx,1);
-      localDirty.disabledHolidays = true;
+      syncDisabledHolidays();
       persistState();
       renderHolidayModal();
       return;
@@ -2362,7 +2159,7 @@
     if (r){
       var date2 = r.getAttribute("data-hol-remove");
       state.customHolidays = state.customHolidays.filter(function(h){ return h.date !== date2; });
-      localDirty.customHolidays = true;
+      syncCustomHolidays();
       persistState();
       renderHolidayModal();
     }
@@ -2376,7 +2173,7 @@
     document.getElementById("holNewDate").value = "";
     document.getElementById("holNewName").value = "";
     holYear = Number(date.slice(0,4));
-    localDirty.customHolidays = true;
+    syncCustomHolidays();
     persistState();
     renderHolidayModal();
   });
@@ -2430,11 +2227,11 @@
             };
             // Una importación puede tocar VARIOS centros a la vez (no solo la pestaña activa) —
             // todos deben quedar marcados para que la siguiente sincronización los suba de vuelta.
-            markCenterDirty(c.key);
+            syncCenter(c.key);
           }
         });
-        if (raw.customHolidays){ state.customHolidays = normalized.customHolidays; localDirty.customHolidays = true; }
-        if (raw.disabledHolidays){ state.disabledHolidays = normalized.disabledHolidays; localDirty.disabledHolidays = true; }
+        if (raw.customHolidays){ state.customHolidays = normalized.customHolidays; syncCustomHolidays(); }
+        if (raw.disabledHolidays){ state.disabledHolidays = normalized.disabledHolidays; syncDisabledHolidays(); }
         onDataChanged();
         alert("Datos importados correctamente.");
       } catch (err){
@@ -2484,7 +2281,7 @@
       state.admins = [adm];
       currentUser = { role: "admin", id: adm.id, username: user, superadmin: true, empresas: [] };
       uiActiveEmpresa = null;
-      localDirty.admins = true;
+      syncAdmins();
       persistState();
       renderApp();
     });
@@ -2551,11 +2348,11 @@
       if (currentUser.role === "admin"){
         var adm = getAdminById(currentUser.id);
         if (adm) adm.pinHash = hash;
-        localDirty.admins = true;
+        syncAdmins();
       } else {
         var op = getOperatorById(currentUser.id);
         if (op) op.pinHash = hash;
-        localDirty.operators = true;
+        syncOperators();
       }
       document.getElementById("pinOverlay").hidden = true;
       onDataChanged();
@@ -2679,7 +2476,7 @@
           empObj.email = emailInput.value.trim();
           empObj.giro = giroInput.value.trim();
         }
-        localDirty.empresas = true;
+        syncEmpresas();
         persistState();
         renderEmpresasGrid();
         renderApp();
@@ -2695,8 +2492,8 @@
           state.empresas = state.empresas.filter(function(x){ return x.key !== eKey; });
           // Se limpia también de cualquier admin restringido a esa empresa, para no dejar referencias colgantes.
           state.admins.forEach(function(a){ if (Array.isArray(a.empresas)) a.empresas = a.empresas.filter(function(k){ return k !== eKey; }); });
-          localDirty.empresas = true;
-          localDirty.admins = true;
+          syncEmpresas();
+          syncAdmins();
           persistState();
           renderEmpresasGrid();
           renderApp();
@@ -2725,7 +2522,7 @@
         zonaExtrema: !!(zonaExtremaI && zonaExtremaI.checked)
       });
       state.centers[cKeyRaw] = { nombre: cNombre, employees: [], nextComprobanteFolio: 1 };
-      localDirty.centrosDef = true;
+      syncCentrosDef();
       persistState();
       renderEmpresasGrid();
       renderApp();
@@ -2747,7 +2544,7 @@
         cdef.zonaExtrema = !!(zonaExtremaInput && zonaExtremaInput.checked);
       }
       if (state.centers[cKey]) state.centers[cKey].nombre = nuevoNombreCentro;
-      localDirty.centrosDef = true;
+      syncCentrosDef();
       persistState();
       renderEmpresasGrid();
       renderApp();
@@ -2762,8 +2559,8 @@
         state.centrosDef = state.centrosDef.filter(function(c){ return c.key !== cKey; });
         delete state.centers[cKey];
         state.operators.forEach(function(o){ o.centros = (o.centros||[]).filter(function(k){ return k !== cKey; }); });
-        localDirty.centrosDef = true;
-        localDirty.operators = true;
+        syncCentrosDef();
+        syncOperators();
         persistState();
         renderEmpresasGrid();
         renderApp();
@@ -2780,7 +2577,7 @@
     if (!nombre || !keyRaw){ errEl.textContent = "Completa la razón social y la key de la nueva empresa."; errEl.hidden = false; return; }
     if (state.empresas.some(function(e){ return e.key === keyRaw; })){ errEl.textContent = "Ya existe una empresa con esa key."; errEl.hidden = false; return; }
     state.empresas.push({ key: keyRaw, nombre: nombre, logoUrl: logo });
-    localDirty.empresas = true;
+    syncEmpresas();
     document.getElementById("empresaNewNombre").value = "";
     document.getElementById("empresaNewKey").value = "";
     document.getElementById("empresaNewLogo").value = "";
@@ -2817,7 +2614,7 @@
     state.settings = state.settings || { notifyWebhookUrl: "", notifyWebhookSecret: "" };
     state.settings.notifyWebhookUrl = document.getElementById("webhookUrl").value.trim();
     state.settings.notifyWebhookSecret = document.getElementById("webhookSecret").value.trim();
-    localDirty.settings = true;
+    syncSettings();
     persistState();
     var resEl = document.getElementById("webhookTestResult");
     resEl.style.color = "var(--good)";
@@ -2946,7 +2743,7 @@
       }
       if (confirm('¿Quitar el acceso del administrador "'+admRemove.username+'"?')){
         state.admins = state.admins.filter(function(a){ return a.id !== admId; });
-        localDirty.admins = true;
+        syncAdmins();
         persistState();
         renderOperatorsGrid();
       }
@@ -2967,7 +2764,7 @@
       var opRemoveCentros = opRemove ? (opRemove.centros || []).map(centerLabel).join(", ") : "";
       if (opRemove && confirm("¿Quitar el acceso del operador \""+opRemove.username+"\" de " + opRemoveCentros + "?")){
         state.operators = state.operators.filter(function(o){ return o.id !== opId; });
-        localDirty.operators = true;
+        syncOperators();
         persistState();
         renderOperatorsGrid();
       }
@@ -3088,7 +2885,7 @@
           state.operators.push({ id: uid(), centros: selectedCentros, username: user, pinHash: hash, viewer: isViewer });
         }
       }
-      if (isAdmin) localDirty.admins = true; else localDirty.operators = true;
+      if (isAdmin) syncAdmins(); else syncOperators();
       document.getElementById("operatorFormOverlay").hidden = true;
       persistState();
       renderOperatorsGrid();
@@ -3187,12 +2984,22 @@
   }
   function renderApp(){
     renderSyncBar();
+    if (!haveUsableState){
+      // Todavía no hay ningún dato que mostrar (ni copia local en caché, ni el primer snapshot
+      // en vivo de Firebase) — se muestra una pantalla de espera pasiva; la conexión anónima es
+      // automática, no requiere ninguna acción del usuario.
+      var errEl = document.getElementById("screenConnectError");
+      if (syncInfo.state === "error"){
+        errEl.textContent = "No se pudo conectar: " + (syncInfo.message || "revisa tu conexión a internet.") + " Se reintentará automáticamente.";
+        errEl.hidden = false;
+      } else {
+        errEl.hidden = true;
+      }
+      showScreen("screenConnect");
+      return;
+    }
     if (!state.admins || state.admins.length === 0){
-      // A diferencia del selector de carpetas local (exclusivo de Chrome/Edge de escritorio),
-      // Google Identity Services funciona en cualquier navegador con internet, así que siempre
-      // se ofrece la pantalla de conexión (el botón "Conectar con Google" avisa si todavía no
-      // terminó de cargar, en vez de saltársela en silencio).
-      showScreen(driveFileId || skippedConnect ? "screenSetup" : "screenConnect");
+      showScreen("screenSetup");
       return;
     }
     if (!currentUser){
@@ -3218,47 +3025,21 @@
   }
 
   // ---------- Init ----------
-  function waitForGsi(maxWaitMs){
-    // El script de Google Identity Services carga en paralelo (async); esperamos brevemente a
-    // que esté listo antes de decidir qué pantalla mostrar, para no confundir "todavía cargando"
-    // con "este navegador no lo soporta".
-    return new Promise(function(resolve){
-      if (gsiSupported()){ resolve(true); return; }
-      var waited = 0;
-      var iv = setInterval(function(){
-        waited += 150;
-        if (gsiSupported() || waited >= maxWaitMs){
-          clearInterval(iv);
-          resolve(gsiSupported());
-        }
-      }, 150);
-    });
-  }
   function init(){
     renderSyncBar();
     var loadState = idbSupported() ? idbGet("appState").catch(function(){ return null; }) : Promise.resolve(null);
-    var loadFileId = idbSupported() ? idbGet("driveFileId").catch(function(){ return null; }) : Promise.resolve(null);
-    Promise.all([loadState, loadFileId]).then(function(results){
-      var savedState = results[0], savedFileId = results[1];
-      if (savedState) state = normalizeState(savedState);
-      if (savedFileId) {
-        driveFileId = savedFileId;
-        syncInfo = { state: "needs-permission", time: null, message: "" };
+    loadState.then(function(savedState){
+      if (savedState){
+        // Pinta de inmediato con la última copia guardada en este computador — no bloquea el
+        // primer dibujo esperando a que Firebase termine de conectar (puede tardar un instante,
+        // o fallar según la red). La conexión en vivo, una vez lista, reemplaza esto con la
+        // versión real y sigue actualizando la pantalla al instante ante cualquier cambio.
+        state = normalizeState(savedState);
+        haveUsableState = true;
       }
     }).catch(function(){}).then(function(){
-      // Pinta de inmediato con los datos locales — no bloquea el primer dibujo esperando a
-      // Google, que puede tardar (o fallar) según la red del navegador.
       renderApp();
-      if (driveFileId){
-        // Reconexión silenciosa en segundo plano: si esta misma cuenta de Google ya está
-        // conectada en este navegador, no debería requerir ninguna ventana visible.
-        waitForGsi(8000).then(function(ready){
-          if (!ready || !driveFileId) return;
-          driveConnecting = true;
-          ensureDriveTokenClient();
-          driveTokenClient.requestAccessToken();
-        });
-      }
+      initFirebaseSync();
     });
   }
   init();
