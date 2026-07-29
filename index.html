@@ -947,6 +947,11 @@
   var rtdbConnecting = false;    // evita intentos de conexión duplicados mientras uno está en curso
   var rtdbReady = false;         // true una vez que llegó el primer snapshot en vivo
   var haveUsableState = false;   // true si ya hay algo que mostrar (copia local en caché, o ya conectado)
+  // Keys de centros que YA existen en el árbol remoto de Firebase, según el último snapshot real
+  // recibido. Se usa para decidir si un centro es genuinamente nuevo (nunca escrito todavía) sin
+  // depender de una bandera local en state.centers[key], porque esa bandera se pierde cada vez que
+  // llega cualquier actualización en vivo (normalizeState reconstruye state.centers desde cero).
+  var knownRemoteCenterKeys = {};
   var syncInfo = { state: "off", time: null, message: "" }; // off|connecting|synced|error
   var IDB_NAME = "control_vacaciones_db", IDB_STORE = "kv";
 
@@ -1017,10 +1022,17 @@
   function syncCentrosDef(){
     fbSet("centrosDef", state.centrosDef);
     // Si se acaba de crear un centro nuevo, también hay que escribir su entrada de datos
-    // (empleados/folio) — recién nace y todavía no existe en el árbol remoto.
+    // (empleados/folio) — recién nace y todavía no existe en el árbol remoto. Usamos
+    // knownRemoteCenterKeys (la foto real del último snapshot de Firebase) en vez de una bandera
+    // local en el objeto: esa bandera se pierde cada vez que llega CUALQUIER actualización en vivo
+    // (normalizeState reconstruye state.centers desde cero sin conservarla), lo que hacía que
+    // cualquier acción en "Gestionar empresas y centros" terminara re-escribiendo TODOS los centros
+    // con la copia local — potencialmente desactualizada — de sus colaboradores, borrando cambios
+    // recién hechos por otro dispositivo. Con esta bandera basada en el árbol remoto real, un
+    // centro que YA existe en Firebase nunca vuelve a ser tocado por esta función.
     state.centrosDef.forEach(function(c){
-      if (state.centers[c.key] && !state.centers[c.key]._synced){
-        state.centers[c.key]._synced = true;
+      if (state.centers[c.key] && !knownRemoteCenterKeys[c.key]){
+        knownRemoteCenterKeys[c.key] = true;
         syncCenter(c.key);
       }
     });
@@ -1052,6 +1064,10 @@
       fbRootRef.on("value", function(snapshot){
         rtdbConnecting = false;
         var remote = snapshot.val();
+        knownRemoteCenterKeys = {};
+        if (remote && remote.centers){
+          Object.keys(remote.centers).forEach(function(k){ knownRemoteCenterKeys[k] = true; });
+        }
         state = remote ? normalizeState(remote) : defaultState();
         if (idbSupported()) idbSet("appState", state).catch(function(){});
         rtdbReady = true;
