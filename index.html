@@ -253,6 +253,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-check-compat.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -958,6 +959,16 @@
     messagingSenderId: "707270364743",
     appId: "1:707270364743:web:0a47b047cdd6d482e2eb62"
   };
+  // Firebase App Check (reCAPTCHA v3): evita que scripts o herramientas externas hablen
+  // directamente con la base de datos usando solo la URL/clave pública (visibles en el código
+  // fuente) — solo conexiones que vengan realmente desde este sitio web reciben un token válido.
+  // Esta es la "site key" pública de reCAPTCHA v3 (no es secreta, está pensada para ir en el
+  // código del cliente); la clave secreta correspondiente se ingresó aparte, directo en la
+  // consola de Firebase (App Check), y nunca viaja por este archivo. IMPORTANTE: no activar
+  // "Enforce" para Realtime Database en la consola de Firebase hasta confirmar que este archivo,
+  // ya con esta clave, esté desplegado en producción — activarlo antes bloquearía también a los
+  // usuarios reales.
+  var APP_CHECK_SITE_KEY = "6LfDeHMtAAAAANuqLiZMkubWiQxeTH2sO-Ohu5QY";
 
   var fbApp = null, fbAuth = null, fbDb = null, fbRootRef = null;
   var rtdbConnecting = false;    // evita intentos de conexión duplicados mientras uno está en curso
@@ -1067,6 +1078,14 @@
     renderSyncBar();
     try {
       fbApp = firebase.apps && firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(FIREBASE_CONFIG);
+      // App Check: si el SDK cargó y ya hay una site key real configurada, se activa. Si el script
+      // no cargó (ej. sin internet) o todavía no se ha puesto la clave real, se sigue conectando
+      // igual sin App Check — así este paso nunca deja a los usuarios reales sin poder entrar.
+      if (firebase.appCheck && APP_CHECK_SITE_KEY && APP_CHECK_SITE_KEY.indexOf("TODO_") !== 0){
+        try {
+          firebase.appCheck().activate(new firebase.appCheck.ReCaptchaV3Provider(APP_CHECK_SITE_KEY), true);
+        } catch (appCheckErr){ /* no crítico: seguimos conectando sin App Check */ }
+      }
       fbAuth = firebase.auth();
       fbDb = firebase.database();
     } catch (err){
